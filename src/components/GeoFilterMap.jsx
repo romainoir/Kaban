@@ -28,6 +28,7 @@ const GeoFilterMap = ({
   const syncRequestRef = useRef(() => { });
   const latestDataRef = useRef([]);
   const [liveBounds, setLiveBounds] = useState(null);
+  const [mapReady, setMapReady] = useState(false);
   const fitHash = useRef('');
 
   // --- Hover Logic ---
@@ -153,6 +154,7 @@ const GeoFilterMap = ({
 
       // Trigger initial sync
       syncRequestRef.current?.(true);
+      setMapReady(true);
     });
 
     // SECONDARY: Load terrain and hillshade after markers are ready
@@ -317,6 +319,7 @@ const GeoFilterMap = ({
       map.remove();
       mapRef.current = null;
       markersRef.current.clear();
+      setMapReady(false);
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -324,6 +327,7 @@ const GeoFilterMap = ({
 
   // Update data when refuges change
   useEffect(() => {
+    if (!mapReady) return;
     latestDataRef.current = geoFeatures;
     const map = mapRef.current;
     if (!map) return;
@@ -364,7 +368,7 @@ const GeoFilterMap = ({
     // Re-sync markers
     syncRequestRef.current(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geoFeatures]);
+  }, [geoFeatures, mapReady]);
 
   useEffect(() => {
     if (liveBounds) onBoundsChange(liveBounds);
