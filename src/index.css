@@ -203,6 +203,23 @@ h3 {
   justify-content: center;
 }
 
+.marker-status-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 6px;
+}
+
+.marker-status-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(20, 20, 20, 0.8) center/12px no-repeat;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+}
+
 .marker-container:hover {
   z-index: 20;
 }
@@ -221,6 +238,11 @@ h3 {
   transform: scale(1.18) translateY(-2px);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35), 0 0 0 8px rgba(46, 125, 50, 0.18);
   filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.45));
+}
+
+.marker-container.hovered .cluster-hut {
+  transform: scale(1.15) translateY(-2px);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.35), 0 0 0 8px rgba(46, 125, 50, 0.18);
 }
 
 .hut-marker,

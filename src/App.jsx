@@ -842,6 +842,9 @@ function App() {
             hoveredRefugeId={hoveredRefugeId}
             selectedMassif={filters.massif !== 'all' ? filters.massif : null}
             selectedMassifPolygon={selectedMassifPolygon}
+            likedRefugeIds={likedRefuges}
+            starredRefugeIds={starredRefuges}
+            dislikedRefugeIds={dislikedRefuges}
           />
         </div>
       </div>

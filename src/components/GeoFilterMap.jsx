@@ -21,6 +21,9 @@ const GeoFilterMap = ({
   hoveredRefugeId = null,
   selectedMassif = null,
   selectedMassifPolygon = null,
+  likedRefugeIds = [],
+  starredRefugeIds = [],
+  dislikedRefugeIds = [],
 }) => {
   const mapRef = useRef(null);
   const containerRef = useRef(null);
@@ -33,6 +36,7 @@ const GeoFilterMap = ({
   const fitHash = useRef('');
   const userMovedRef = useRef(false);
   const hoveredMarkerRef = useRef(null);
+  const hoveredIdRef = useRef(null);
 
   // --- Hover Logic ---
   const hoverPreviewRef = useRef(null);
@@ -80,14 +84,20 @@ const GeoFilterMap = ({
         .map((r) => {
           const coords = r.geometry?.coordinates;
           if (!coords || coords.length < 2) return null;
+          const rid = r.properties?.id;
           return {
             type: 'Feature',
             geometry: { type: 'Point', coordinates: coords },
-            properties: r.properties,
+            properties: {
+              ...r.properties,
+              __isLiked: likedRefugeIds.includes(rid),
+              __isStarred: starredRefugeIds.includes(rid),
+              __isDisliked: dislikedRefugeIds.includes(rid),
+            },
           };
         })
         .filter(Boolean),
-    [refuges]
+    [refuges, likedRefugeIds, starredRefugeIds, dislikedRefugeIds]
   );
 
   const reset = () => onResetBounds();
@@ -223,7 +233,7 @@ const GeoFilterMap = ({
 
         if (!markersRef.current.has(id)) {
           const marker = isCluster
-            ? createRefugeCluster(f, map, thumbCacheRef.current)
+            ? createRefugeCluster(f, map, thumbCacheRef.current, hoveredIdRef, hoveredMarkerRef)
             : createRefugeMarker(f, map, handleSelectMarker, { showHover, hideHover, lastMouseRef, updateHoverPos, compact });
           marker.addTo(map);
           markersRef.current.set(id, marker);
@@ -316,6 +326,10 @@ const GeoFilterMap = ({
   }, [useMapFilter, activeBounds]);
 
   useEffect(() => {
+    hoveredIdRef.current = hoveredRefugeId ? String(hoveredRefugeId) : null;
+  }, [hoveredRefugeId]);
+
+  useEffect(() => {
     if (!mapReady) return;
 
     if (hoveredMarkerRef.current?.getElement) {
@@ -327,13 +341,17 @@ const GeoFilterMap = ({
       return;
     }
 
+    const hoveredId = String(hoveredRefugeId);
     for (const marker of markersRef.current.values()) {
-      if (marker.__refugeId && String(marker.__refugeId) === String(hoveredRefugeId)) {
-        const el = marker.getElement?.();
-        if (el) {
-          el.classList.add('hovered');
-          hoveredMarkerRef.current = marker;
-        }
+      const el = marker.getElement?.();
+      if (!el) continue;
+
+      const matchesPoint = marker.__refugeId && String(marker.__refugeId) === hoveredId;
+      const matchesCluster = marker.__leafIds && marker.__leafIds.has(hoveredId);
+
+      if (matchesPoint || matchesCluster) {
+        el.classList.add('hovered');
+        hoveredMarkerRef.current = marker;
         break;
       }
     }
@@ -481,6 +499,15 @@ export default GeoFilterMap;
 const REFUGE_ICON =
   'data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" fill=\"none\" stroke=\"%23ffffff\" stroke-width=\"3\"><path fill=\"%232e7d32\" d=\"M8 30L32 12l24 18v20a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z\"/><path d=\"M24 52V34a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v18\"/><path d=\"M12 32l20-15 20 15\"/></svg>';
 
+const STAR_ICON =
+  'data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"%23fbbf24\" stroke=\"%23fbbf24\" stroke-width=\"1.5\"><path d=\"M12 2.5l2.9 6 6.6.9-4.8 4.7 1.1 6.6L12 17.7l-5.8 3.1 1.1-6.6L2.5 9.4l6.6-.9z\"/></svg>';
+
+const HEART_ICON =
+  'data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"%23ef4444\" stroke=\"%23ef4444\" stroke-width=\"1.5\"><path d=\"M12 21s-7.2-4.2-9.5-9C.7 8 .9 4.7 3.4 3c2.9-2 6.1-.4 8.6 2.2C14.5 2.6 17.7 1 20.6 3c2.5 1.7 2.7 5 .9 9-2.3 4.8-9.5 9-9.5 9z\"/></svg>';
+
+const BAN_ICON =
+  'data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"%23ef4444\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M6.5 6.5l11 11\"/></svg>';
+
 function preloadImage(url) {
   return new Promise((resolve) => {
     const img = new Image();
@@ -510,6 +537,13 @@ function getRefugePrimaryPhoto(p) {
   const photos = extractPhotos(p);
   if (photos.length) return photos[photos.length - 1]; // Use last photo
   return p.thumbnail || '';
+}
+
+function createStatusIcon(icon, type) {
+  const badge = document.createElement('div');
+  badge.className = `marker-status-icon ${type}`;
+  badge.style.backgroundImage = `url('${icon}')`;
+  return badge;
 }
 
 function createRefugeMarker(f, map, onSelect, hoverCtx) {
@@ -546,6 +580,17 @@ function createRefugeMarker(f, map, onSelect, hoverCtx) {
   }
 
   el.appendChild(hut);
+
+  const statusBar = document.createElement('div');
+  statusBar.className = 'marker-status-bar';
+
+  if (p.__isStarred) statusBar.appendChild(createStatusIcon(STAR_ICON, 'star'));
+  if (p.__isLiked) statusBar.appendChild(createStatusIcon(HEART_ICON, 'like'));
+  if (p.__isDisliked) statusBar.appendChild(createStatusIcon(BAN_ICON, 'ban'));
+
+  if (statusBar.childNodes.length) {
+    el.appendChild(statusBar);
+  }
 
   // Hover events (only if not compact and hoverCtx provided)
   if (hoverCtx && !hoverCtx.compact) {
@@ -584,7 +629,7 @@ function createRefugeMarker(f, map, onSelect, hoverCtx) {
   return marker;
 }
 
-function createRefugeCluster(f, map, thumbCache) {
+function createRefugeCluster(f, map, thumbCache, hoveredIdRef, hoveredMarkerRef) {
   const cid = f.properties.cluster_id;
   const count = f.properties.point_count;
   const el = document.createElement('div');
@@ -599,6 +644,20 @@ function createRefugeCluster(f, map, thumbCache) {
 
   const cacheKey = `refuges:${cid}`;
   const cached = thumbCache.get(cacheKey);
+  const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(f.geometry.coordinates);
+  marker.__leafIds = new Set();
+  marker.__clusterId = cid;
+
+  const assignLeaves = (leaves) => {
+    marker.__leafIds = new Set(leaves.map((l) => String(l.properties?.id ?? l.id)));
+    if (hoveredIdRef?.current && marker.__leafIds.has(String(hoveredIdRef.current))) {
+      const markerEl = marker.getElement?.();
+      if (markerEl) {
+        markerEl.classList.add('hovered');
+        if (hoveredMarkerRef) hoveredMarkerRef.current = marker;
+      }
+    }
+  };
 
   const setFallback = () => {
     box.classList.add('no-photo');
@@ -612,35 +671,39 @@ function createRefugeCluster(f, map, thumbCache) {
     box.style.backgroundPosition = 'center';
   };
 
+  const source = map.getSource('refuges');
+  const leafCount = count || 10;
+
   if (cached) {
     setImage(cached);
-  } else {
-    const source = map.getSource('refuges');
     if (source && source.getClusterLeaves) {
-      source
-        .getClusterLeaves(cid, 10, 0)
-        .then((leaves) => {
-          const leaf = leaves.find((l) => getRefugePrimaryPhoto(l.properties));
-          if (leaf) {
-            const url = getRefugePrimaryPhoto(leaf.properties);
-            if (url) {
-              preloadImage(url).then((ok) => {
-                if (ok) {
-                  thumbCache.set(cacheKey, url);
-                  setImage(url);
-                } else {
-                  setFallback();
-                }
-              });
-            } else {
-              setFallback();
-            }
+      source.getClusterLeaves(cid, leafCount, 0).then(assignLeaves).catch(() => { });
+    }
+  } else if (source && source.getClusterLeaves) {
+    source
+      .getClusterLeaves(cid, leafCount, 0)
+      .then((leaves) => {
+        assignLeaves(leaves);
+        const leaf = leaves.find((l) => getRefugePrimaryPhoto(l.properties));
+        if (leaf) {
+          const url = getRefugePrimaryPhoto(leaf.properties);
+          if (url) {
+            preloadImage(url).then((ok) => {
+              if (ok) {
+                thumbCache.set(cacheKey, url);
+                setImage(url);
+              } else {
+                setFallback();
+              }
+            });
           } else {
             setFallback();
           }
-        })
-        .catch(setFallback);
-    }
+        } else {
+          setFallback();
+        }
+      })
+      .catch(setFallback);
   }
 
   el.addEventListener('click', (e) => {
@@ -648,5 +711,5 @@ function createRefugeCluster(f, map, thumbCache) {
     map.easeTo({ center: f.geometry.coordinates, zoom: map.getZoom() + 1.5 });
   });
 
-  return new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(f.geometry.coordinates);
+  return marker;
 }
