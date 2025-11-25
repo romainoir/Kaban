@@ -213,6 +213,16 @@ h3 {
   filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.35));
 }
 
+.marker-container.hovered {
+  z-index: 25;
+}
+
+.marker-container.hovered .hut-marker {
+  transform: scale(1.18) translateY(-2px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35), 0 0 0 8px rgba(46, 125, 50, 0.18);
+  filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.45));
+}
+
 .hut-marker,
 .cluster-hut {
   transition: transform 0.25s ease, box-shadow 0.25s ease;
@@ -314,14 +324,15 @@ h3 {
 
 .filter-panel {
   padding: 1.25rem;
-  background: rgba(13, 16, 26, 0.92);
-  backdrop-filter: blur(10px) saturate(140%);
-  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  background: linear-gradient(135deg, rgba(44, 40, 38, 0.9), rgba(28, 25, 23, 0.9));
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
   display: flex;
   flex-direction: column;
   gap: 1.1rem;
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
+  border: 1px solid var(--card-border);
 }
 
 .filter-header {
@@ -343,6 +354,71 @@ h3 {
   flex-direction: column;
   gap: 0.5rem;
   text-align: left;
+}
+
+.toggle-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 26px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.12);
+  transition: 0.3s;
+  border-radius: 16px;
+  border: 1px solid var(--card-border);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.slider:before {
+  position: absolute;
+  content: '';
+  height: 18px;
+  width: 18px;
+  left: 4px;
+  bottom: 3px;
+  background-color: #fff;
+  transition: 0.3s;
+  border-radius: 50%;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+}
+
+.switch input:checked + .slider {
+  background-color: rgba(46, 125, 50, 0.35);
+  border-color: var(--accent);
+}
+
+.switch input:checked + .slider:before {
+  transform: translateX(20px);
+  background-color: var(--accent);
 }
 
 .filter-select {
@@ -369,6 +445,12 @@ h3 {
 .filter-select option:checked,
 .filter-select option:hover {
   background: var(--card-bg);
+}
+
+.preference-panel {
+  padding: 1.25rem;
+  background: linear-gradient(135deg, rgba(44, 40, 38, 0.95), rgba(15, 15, 15, 0.9));
+  border: 1px solid var(--card-border);
 }
 
 .range-row {

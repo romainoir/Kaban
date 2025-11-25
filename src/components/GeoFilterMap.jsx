@@ -18,6 +18,7 @@ const GeoFilterMap = ({
   initialView = { center: [6.4, 45.2], zoom: 6 },
   onViewChange = () => { },
   onSelectMarker,
+  hoveredRefugeId = null,
   selectedMassif = null,
   selectedMassifPolygon = null,
 }) => {
@@ -31,6 +32,7 @@ const GeoFilterMap = ({
   const [mapReady, setMapReady] = useState(false);
   const fitHash = useRef('');
   const userMovedRef = useRef(false);
+  const hoveredMarkerRef = useRef(null);
 
   // --- Hover Logic ---
   const hoverPreviewRef = useRef(null);
@@ -313,6 +315,30 @@ const GeoFilterMap = ({
     }
   }, [useMapFilter, activeBounds]);
 
+  useEffect(() => {
+    if (!mapReady) return;
+
+    if (hoveredMarkerRef.current?.getElement) {
+      hoveredMarkerRef.current.getElement().classList.remove('hovered');
+    }
+
+    if (!hoveredRefugeId) {
+      hoveredMarkerRef.current = null;
+      return;
+    }
+
+    for (const marker of markersRef.current.values()) {
+      if (marker.__refugeId && String(marker.__refugeId) === String(hoveredRefugeId)) {
+        const el = marker.getElement?.();
+        if (el) {
+          el.classList.add('hovered');
+          hoveredMarkerRef.current = marker;
+        }
+        break;
+      }
+    }
+  }, [hoveredRefugeId, mapReady]);
+
   // Watch for initialView changes (e.g., from search) and update map
   useEffect(() => {
     if (!mapRef.current || !initialView) return;
@@ -495,6 +521,8 @@ function createRefugeMarker(f, map, onSelect, hoverCtx) {
   const hut = document.createElement('div');
   hut.className = 'hut-marker';
 
+  el.dataset.refugeId = p.id;
+
   const status = (p.status || p.etat?.valeur || '').toLowerCase();
   if (status.includes('ferm') || status.includes('detru')) hut.classList.add('is-closed');
 
@@ -551,7 +579,9 @@ function createRefugeMarker(f, map, onSelect, hoverCtx) {
     map.easeTo({ center: f.geometry.coordinates, zoom: Math.max(map.getZoom(), 11) });
   });
 
-  return new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(f.geometry.coordinates);
+  const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(f.geometry.coordinates);
+  marker.__refugeId = p.id;
+  return marker;
 }
 
 function createRefugeCluster(f, map, thumbCache) {
