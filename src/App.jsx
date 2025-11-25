@@ -174,7 +174,7 @@ function App() {
   }, [mapExpanded, selectedRefuge, isMobileFiltersOpen]);
 
   useEffect(() => {
-    fetch('/refuges_enriched.json')
+    fetch(`${import.meta.env.BASE_URL}refuges_enriched.json`)
       .then((res) => res.json())
       .then((data) => {
         const processed = data.features.map((f) => {
@@ -215,7 +215,7 @@ function App() {
 
   // Load massifs and pre-calculate bboxes
   useEffect(() => {
-    fetch('/massifs.json')
+    fetch(`${import.meta.env.BASE_URL}massifs.json`)
       .then(res => res.json())
       .then(data => {
         data.features.forEach(f => {
