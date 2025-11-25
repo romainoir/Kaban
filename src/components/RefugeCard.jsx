@@ -16,7 +16,7 @@ const RefugeCard = ({ refuge, score, onSelect, layout = 'grid', isStarred, onTog
       className="glass-panel"
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      whileHover={{ y: -4, scale: 1.02, boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}
+      whileHover={{ y: -4, scale: 1.02, boxShadow: '0 32px 80px rgba(0,0,0,0.28)' }}
       onClick={() => onSelect(refuge)}
       onMouseEnter={onHover}
       onMouseLeave={onHoverEnd}
