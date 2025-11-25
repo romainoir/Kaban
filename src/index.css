@@ -314,7 +314,9 @@ h3 {
 
 .filter-panel {
   padding: 1.25rem;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(13, 16, 26, 0.92);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
   display: flex;
   flex-direction: column;
   gap: 1.1rem;
@@ -350,6 +352,8 @@ h3 {
   border: 1px solid var(--card-border);
   border-radius: 10px;
   color: var(--text-primary);
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 .filter-select:focus-visible {
@@ -359,6 +363,12 @@ h3 {
 .filter-select option {
   background: var(--bg-color);
   color: var(--text-primary);
+  appearance: none;
+}
+
+.filter-select option:checked,
+.filter-select option:hover {
+  background: var(--card-bg);
 }
 
 .range-row {

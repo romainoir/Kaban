@@ -30,6 +30,7 @@ const GeoFilterMap = ({
   const [liveBounds, setLiveBounds] = useState(null);
   const [mapReady, setMapReady] = useState(false);
   const fitHash = useRef('');
+  const userMovedRef = useRef(false);
 
   // --- Hover Logic ---
   const hoverPreviewRef = useRef(null);
@@ -98,7 +99,7 @@ const GeoFilterMap = ({
       style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
       center: initialView?.center || [6.4, 45.2],
       zoom: initialView?.zoom ?? (compact ? 5.5 : 6),
-      pitch: compact ? 0 : 45, // Add pitch for 3D view
+      pitch: 0,
       bearing: 0,
       renderWorldCopies: false,
       attributionControl: false,
@@ -157,26 +158,11 @@ const GeoFilterMap = ({
       setMapReady(true);
     });
 
-    // SECONDARY: Load terrain and hillshade after markers are ready
+    // SECONDARY: Load hillshade after markers are ready (no terrain to keep map flat)
     if (!compact) {
       map.once('idle', () => {
-        // Wait a bit to ensure markers are displayed first
         setTimeout(() => {
-          if (!map.getSource('terrain')) {
-            // Add terrain source
-            map.addSource('terrain', {
-              type: 'raster-dem',
-              url: 'https://tiles.mapterhorn.com/tilejson.json',
-              tileSize: 256,
-            });
-
-            // Set terrain on the map
-            map.setTerrain({
-              source: 'terrain',
-              exaggeration: 1.5,
-            });
-
-            // Add hillshade layer for better visualization
+          if (!map.getSource('hillshade')) {
             map.addSource('hillshade', {
               type: 'raster-dem',
               url: 'https://tiles.mapterhorn.com/tilejson.json',
@@ -191,65 +177,10 @@ const GeoFilterMap = ({
                 'hillshade-exaggeration': 0.3,
                 'hillshade-shadow-color': '#000000',
               },
-            }); // Will be below refuge markers which are already added
+            });
           }
-        }, 100); // Small delay to ensure markers render first
+        }, 100);
       });
-    }
-
-    if (!compact) {
-      // Add custom terrain toggle control
-      class TerrainControl {
-        constructor() {
-          this._terrainEnabled = true;
-        }
-
-        onAdd(map) {
-          this._map = map;
-          this._container = document.createElement('div');
-          this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group';
-
-          this._button = document.createElement('button');
-          this._button.type = 'button';
-          this._button.className = 'maplibregl-ctrl-terrain';
-          this._button.title = 'Toggle 3D terrain';
-          this._button.innerHTML = '⛰️';
-          this._button.style.fontSize = '16px';
-          this._button.style.fontWeight = 'bold';
-
-          this._button.onclick = () => {
-            this._terrainEnabled = !this._terrainEnabled;
-
-            if (this._terrainEnabled) {
-              this._map.setTerrain({
-                source: 'terrain',
-                exaggeration: 1.5,
-              });
-              this._map.setPitch(45);
-              this._map.setLayoutProperty('hillshade-layer', 'visibility', 'visible');
-              this._button.style.backgroundColor = 'rgba(0, 122, 255, 0.2)';
-            } else {
-              this._map.setTerrain(null);
-              this._map.setPitch(0);
-              this._map.setLayoutProperty('hillshade-layer', 'visibility', 'none');
-              this._button.style.backgroundColor = '';
-            }
-          };
-
-          // Start with terrain enabled
-          this._button.style.backgroundColor = 'rgba(0, 122, 255, 0.2)';
-
-          this._container.appendChild(this._button);
-          return this._container;
-        }
-
-        onRemove() {
-          this._container.parentNode.removeChild(this._container);
-          this._map = undefined;
-        }
-      }
-
-      map.addControl(new TerrainControl(), 'top-right');
     }
     mapRef.current = map;
 
@@ -311,6 +242,8 @@ const GeoFilterMap = ({
     map.on('move', () => requestSync(false));
     map.on('zoom', () => requestSync(false));
     map.on('idle', () => requestSync(true));
+    map.on('dragstart', () => { userMovedRef.current = true; });
+    map.on('zoomstart', () => { userMovedRef.current = true; });
 
     // cleanup
     return () => {
@@ -337,7 +270,7 @@ const GeoFilterMap = ({
     source.setData({ type: 'FeatureCollection', features: geoFeatures });
 
     // Fit to results (avoid spamming by hashing length + first coords)
-    if (geoFeatures.length) {
+    if (geoFeatures.length && !userMovedRef.current) {
       const first = geoFeatures[0].geometry.coordinates.join(',');
       const hash = `${geoFeatures.length}-${first}`;
       if (hash !== fitHash.current) {
@@ -373,6 +306,12 @@ const GeoFilterMap = ({
   useEffect(() => {
     if (liveBounds) onBoundsChange(liveBounds);
   }, [liveBounds, onBoundsChange]);
+
+  useEffect(() => {
+    if (!useMapFilter && !activeBounds) {
+      userMovedRef.current = false;
+    }
+  }, [useMapFilter, activeBounds]);
 
   // Watch for initialView changes (e.g., from search) and update map
   useEffect(() => {
