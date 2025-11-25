@@ -464,7 +464,7 @@ function App() {
         zIndex: 50
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <img src="/logo.png" alt="Kaban" style={{ width: '40px', height: '40px', objectFit: 'contain', filter: 'brightness(0) invert(1)' }} />
+          <img src={`${import.meta.env.BASE_URL}logo.png`} alt="Kaban" style={{ width: '40px', height: '40px', objectFit: 'contain', filter: 'brightness(0) invert(1)' }} />
           <h1 style={{ fontSize: '1.5rem', fontWeight: '800', letterSpacing: '-0.03em' }}>Kaban</h1>
         </div>
 
