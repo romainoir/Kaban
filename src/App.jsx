@@ -4,7 +4,7 @@ import SpiderChart from './components/SpiderChart';
 import RefugeModal from './components/RefugeModal';
 import GeoFilterMap from './components/GeoFilterMap';
 import FilterPanel from './components/FilterPanel';
-import { Mountain, LayoutGrid, List, X, ChevronDown, Filter, Search, User, ChevronLeft, ChevronRight, Ban } from 'lucide-react';
+import { LayoutGrid, List, X, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 
 const isPointInPolygon = (point, geometry) => {
   if (!geometry) return false;
@@ -42,7 +42,7 @@ const createDefaultFilters = () => ({
   equipments: { water: false, wood: false, heating: false, latrines: false, mattress: false, blankets: false },
   capacity: 0,
   includeClosed: false,
-  useMapFilter: false,
+  useMapFilter: true,
 });
 
 function App() {
@@ -50,7 +50,7 @@ function App() {
   const [selectedRefuge, setSelectedRefuge] = useState(null);
   const [viewMode, setViewMode] = useState('grid');
   const [mapBounds, setMapBounds] = useState(null);
-  const [useMapFilter, setUseMapFilter] = useState(false);
+  const [useMapFilter, setUseMapFilter] = useState(true);
   const [filters, setFilters] = useState(createDefaultFilters);
   const [preferences, setPreferences] = useState({
     comfort: 50,
@@ -65,8 +65,7 @@ function App() {
   const [mapView, setMapView] = useState({ center: [6.4, 45.2], zoom: 6 });
 
   const [isMobileFiltersOpen, setIsMobileFiltersOpen] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
-  const [showSortModal, setShowSortModal] = useState(false);
+  const [showFiltersModal, setShowFiltersModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchSuggestions, setSearchSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -373,6 +372,53 @@ function App() {
   const clearMapFilter = () => {
     setMapBounds(null);
     setUseMapFilter(false);
+    setFilters(prev => ({ ...prev, useMapFilter: false }));
+  };
+
+  const buildLocalSuggestions = (query) => {
+    const term = query.trim().toLowerCase();
+    if (term.length < 2) return [];
+
+    const massifSuggestions = (massifsData?.features || [])
+      .filter(f => f.properties.nom?.toLowerCase().includes(term))
+      .slice(0, 5)
+      .map(f => {
+        const [minX, minY, maxX, maxY] = f.bbox || calcBBox(f.geometry);
+        return {
+          type: 'massif',
+          id: f.properties.id.toString(),
+          name: f.properties.nom,
+          displayName: f.properties.nom,
+          lat: (minY + maxY) / 2,
+          lon: (minX + maxX) / 2,
+          subtitle: 'Massif'
+        };
+      });
+
+    const seenSummits = new Set();
+    const summitSuggestions = refuges
+      .filter(r => {
+        const nom = r.properties?.nom?.toLowerCase();
+        return nom && nom.includes(term);
+      })
+      .filter(r => {
+        const name = r.properties?.nom;
+        if (!name || seenSummits.has(name)) return false;
+        seenSummits.add(name);
+        return true;
+      })
+      .slice(0, 7)
+      .map(r => ({
+        type: 'sommet',
+        id: r.properties.id,
+        name: r.properties.nom,
+        displayName: r.properties.nom,
+        lat: r.geometry?.coordinates?.[1],
+        lon: r.geometry?.coordinates?.[0],
+        subtitle: 'Sommet / refuge'
+      }));
+
+    return [...massifSuggestions, ...summitSuggestions];
   };
 
   const handleSearch = async () => {
@@ -402,9 +448,10 @@ function App() {
 
   // Fetch search suggestions
   const fetchSuggestions = async (query) => {
-    if (!query.trim() || query.length < 3) {
-      setSearchSuggestions([]);
-      setShowSuggestions(false);
+    const localMatches = buildLocalSuggestions(query);
+    if (!query.trim() || query.length < 2) {
+      setSearchSuggestions(localMatches);
+      setShowSuggestions(localMatches.length > 0);
       return;
     }
 
@@ -413,8 +460,17 @@ function App() {
         `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=fr,ch,it`
       );
       const data = await response.json();
-      setSearchSuggestions(data);
-      setShowSuggestions(data.length > 0);
+      const remoteSuggestions = data.map(item => ({
+        type: 'city',
+        name: item.display_name.split(',')[0],
+        displayName: item.display_name,
+        lat: parseFloat(item.lat),
+        lon: parseFloat(item.lon),
+        subtitle: 'Ville'
+      }));
+      const combined = [...localMatches, ...remoteSuggestions];
+      setSearchSuggestions(combined);
+      setShowSuggestions(combined.length > 0);
     } catch (error) {
       console.error('Suggestions error:', error);
     }
@@ -440,13 +496,19 @@ function App() {
     const lat = parseFloat(suggestion.lat);
     const lon = parseFloat(suggestion.lon);
 
-    setSearchQuery(suggestion.display_name);
+    setSearchQuery(suggestion.displayName || suggestion.name);
     setShowSuggestions(false);
     setSearchSuggestions([]);
 
+    if (suggestion.type === 'massif' && suggestion.id) {
+      setFilters(prev => ({ ...prev, massif: suggestion.id }));
+      setMapView({ center: [lon, lat], zoom: 9 });
+      return;
+    }
+
     setMapView({
       center: [lon, lat],
-      zoom: 12
+      zoom: suggestion.type === 'city' ? 11 : 12
     });
   };
 
@@ -499,7 +561,7 @@ function App() {
                   setShowSuggestions(false);
                 }
               }}
-              onFocus={() => searchQuery.length >= 3 && searchSuggestions.length > 0 && setShowSuggestions(true)}
+              onFocus={() => searchQuery.length >= 2 && searchSuggestions.length > 0 && setShowSuggestions(true)}
               placeholder="Où souhaitez-vous bivouaquer ? (Massif, sommet...)"
               style={{
                 background: 'transparent',
@@ -510,22 +572,6 @@ function App() {
                 fontSize: '0.95rem'
               }}
             />
-            <button
-              onClick={() => setShowFilters(!showFilters)}
-              style={{
-                background: 'rgba(255,255,255,0.1)',
-                border: 'none',
-                borderRadius: '6px',
-                padding: '0.4rem 0.8rem',
-                color: 'var(--text-primary)',
-                fontWeight: '600',
-                cursor: 'pointer',
-                marginRight: '4px',
-                fontSize: '0.9rem'
-              }}
-            >
-              Filtres
-            </button>
             <button
               onClick={handleSearch}
               style={{
@@ -563,23 +609,40 @@ function App() {
             }}>
               {searchSuggestions.map((suggestion, index) => (
                 <div
-                  key={suggestion.place_id}
+                  key={`${suggestion.type}-${suggestion.id || suggestion.displayName || suggestion.name}-${index}`}
                   onClick={() => handleSuggestionClick(suggestion)}
                   style={{
                     padding: '0.75rem 1rem',
                     cursor: 'pointer',
                     borderBottom: index < searchSuggestions.length - 1 ? '1px solid var(--card-border)' : 'none',
-                    transition: 'background 0.2s'
+                    transition: 'background 0.2s',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
                   }}
                   onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
                   onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                 >
-                  <div style={{ fontSize: '0.95rem', color: 'var(--text-primary)', marginBottom: '4px' }}>
-                    {suggestion.display_name.split(',')[0]}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem' }}>
+                    <div style={{ fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                      {suggestion.name || suggestion.displayName}
+                    </div>
+                    <span style={{
+                      fontSize: '0.7rem',
+                      padding: '0.15rem 0.4rem',
+                      borderRadius: '999px',
+                      background: 'rgba(255,255,255,0.06)',
+                      border: '1px solid var(--card-border)',
+                      color: 'var(--text-secondary)'
+                    }}>
+                      {suggestion.subtitle || 'Suggestion'}
+                    </span>
                   </div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                    {suggestion.display_name}
-                  </div>
+                  {suggestion.displayName && (
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                      {suggestion.displayName}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -589,41 +652,6 @@ function App() {
 
       {/* Main Layout */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-
-        {/* Filters Overlay */}
-        {showFilters && (
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '40%',
-            minWidth: '400px',
-            maxWidth: '550px',
-            height: '100%',
-            background: 'var(--card-bg)',
-            backdropFilter: 'blur(12px)',
-            borderRight: '1px solid var(--card-border)',
-            zIndex: 40,
-            padding: '1.5rem',
-            overflowY: 'auto'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h3>Filtres</h3>
-              <button onClick={() => setShowFilters(false)} className="btn ghost" style={{ padding: '4px' }}><X size={18} /></button>
-            </div>
-            <FilterPanel
-              draft={filters}
-              onChange={setFilters}
-              onReset={() => setFilters(createDefaultFilters())}
-              showFavorites={filters.showFavorites}
-              onToggleFavorites={() => setFilters(prev => ({ ...prev, showFavorites: !prev.showFavorites }))}
-              showLiked={filters.showLiked}
-              onToggleLiked={() => setFilters(prev => ({ ...prev, showLiked: !prev.showLiked }))}
-              massifs={availableMassifs}
-            />
-          </div>
-        )}
-
         {/* Left Sidebar (List) */}
         <div style={{
           width: panelMode === 'collapsed' ? '60px' : panelMode === 'expanded' ? '100%' : '40%',
@@ -725,11 +753,11 @@ function App() {
                     {displayedRefuges.length} cabanes
                   </h2>
                   <button
-                    onClick={() => setShowSortModal(true)}
+                    onClick={() => setShowFiltersModal(true)}
                     className="btn ghost"
                     style={{ fontSize: '0.9rem', padding: '0.4rem 0.8rem' }}
                   >
-                    Trier par
+                    Filtres
                   </button>
                 </div>
                 {panelMode === 'expanded' && (
@@ -823,54 +851,66 @@ function App() {
         onToggleDislike={() => selectedRefuge && toggleDislike(selectedRefuge.properties.id)}
       />
 
-      {/* Sort Modal */}
-      {
-        showSortModal && (
+      {/* Filters Modal (includes spider chart) */}
+      {showFiltersModal && (
+        <div
+          onClick={() => setShowFiltersModal(false)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.7)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 1400,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '2rem'
+          }}
+        >
           <div
-            onClick={() => setShowSortModal(false)}
+            onClick={(e) => e.stopPropagation()}
             style={{
-              position: 'fixed',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              background: 'rgba(0,0,0,0.7)',
-              backdropFilter: 'blur(8px)',
-              zIndex: 1400,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '2rem'
+              background: 'var(--card-bg)',
+              border: '1px solid var(--card-border)',
+              borderRadius: '16px',
+              padding: '2rem',
+              maxWidth: '1000px',
+              width: '100%',
+              maxHeight: '85vh',
+              overflowY: 'auto'
             }}
           >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                background: 'var(--card-bg)',
-                border: '1px solid var(--card-border)',
-                borderRadius: '16px',
-                padding: '2rem',
-                maxWidth: '800px',
-                width: '100%',
-                maxHeight: '80vh',
-                overflowY: 'auto'
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-                <h2 style={{ margin: 0 }}>Définir votre refuge idéal</h2>
-                <button
-                  onClick={() => setShowSortModal(false)}
-                  className="btn ghost"
-                  style={{ padding: '4px' }}
-                >
-                  <X size={24} />
-                </button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Filtres</h2>
+                <p style={{ margin: '0.25rem 0 0', color: 'var(--text-secondary)' }}>Ajustez les critères et vos préférences.</p>
               </div>
-              <SpiderChart preferences={preferences} setPreferences={setPreferences} />
+              <button
+                onClick={() => setShowFiltersModal(false)}
+                className="btn ghost"
+                style={{ padding: '4px' }}
+              >
+                <X size={24} />
+              </button>
+            </div>
+            <div style={{ display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
+              <FilterPanel
+                draft={filters}
+                onChange={updateFilters}
+                onReset={resetFilters}
+                massifs={availableMassifs}
+              />
+              <div className="glass-panel" style={{ padding: '1rem' }}>
+                <h3 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Vos préférences</h3>
+                <SpiderChart preferences={preferences} setPreferences={setPreferences} />
+              </div>
             </div>
           </div>
-        )
-      }
+        </div>
+      )}
     </div >
   );
 }
