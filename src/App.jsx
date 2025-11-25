@@ -4,7 +4,7 @@ import SpiderChart from './components/SpiderChart';
 import RefugeModal from './components/RefugeModal';
 import GeoFilterMap from './components/GeoFilterMap';
 import FilterPanel from './components/FilterPanel';
-import { LayoutGrid, List, X, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { LayoutGrid, List, X, Search, ChevronLeft, ChevronRight, Heart, Star } from 'lucide-react';
 
 const isPointInPolygon = (point, geometry) => {
   if (!geometry) return false;
@@ -42,6 +42,8 @@ const createDefaultFilters = () => ({
   equipments: { water: false, wood: false, heating: false, latrines: false, mattress: false, blankets: false },
   capacity: 0,
   includeClosed: false,
+  showFavorites: false,
+  showLiked: false,
   useMapFilter: true,
 });
 
@@ -63,6 +65,7 @@ function App() {
   const [showSpider, setShowSpider] = useState(true);
   const [mapExpanded, setMapExpanded] = useState(false);
   const [mapView, setMapView] = useState({ center: [6.4, 45.2], zoom: 6 });
+  const [hoveredRefugeId, setHoveredRefugeId] = useState(null);
 
   const [isMobileFiltersOpen, setIsMobileFiltersOpen] = useState(false);
   const [showFiltersModal, setShowFiltersModal] = useState(false);
@@ -794,6 +797,8 @@ function App() {
                       refuge={refuge}
                       score={refuge.matchScore}
                       onSelect={setSelectedRefuge}
+                      onHover={() => setHoveredRefugeId(refuge.properties.id)}
+                      onHoverEnd={() => setHoveredRefugeId(null)}
                       layout={panelMode === 'expanded' ? viewMode : 'list'}
                       isLiked={likedRefuges.includes(refuge.properties.id)}
                       onToggleLike={() => toggleLike(refuge.properties.id)}
@@ -834,6 +839,7 @@ function App() {
             initialView={mapView}
             onViewChange={setMapView}
             onSelectMarker={setSelectedRefuge}
+            hoveredRefugeId={hoveredRefugeId}
             selectedMassif={filters.massif !== 'all' ? filters.massif : null}
             selectedMassifPolygon={selectedMassifPolygon}
           />
@@ -883,13 +889,12 @@ function App() {
               overflowY: 'auto'
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-              <div>
-                <h2 style={{ margin: 0 }}>Filtres</h2>
-                <p style={{ margin: '0.25rem 0 0', color: 'var(--text-secondary)' }}>Ajustez les critères et vos préférences.</p>
-              </div>
-              <button
-                onClick={() => setShowFiltersModal(false)}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+                <div>
+                  <h2 style={{ margin: 0 }}>Filtres</h2>
+                </div>
+                <button
+                  onClick={() => setShowFiltersModal(false)}
                 className="btn ghost"
                 style={{ padding: '4px' }}
               >
@@ -903,9 +908,18 @@ function App() {
                 onReset={resetFilters}
                 massifs={availableMassifs}
               />
-              <div className="glass-panel" style={{ padding: '1rem' }}>
-                <h3 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Vos préférences</h3>
-                <SpiderChart preferences={preferences} setPreferences={setPreferences} />
+              <div className="glass-panel preference-panel">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                  <h3 style={{ margin: 0 }}>Vos préférences</h3>
+                  <Heart size={16} color="var(--accent)" />
+                  <Star size={16} color="var(--warning)" />
+                </div>
+                <SpiderChart
+                  preferences={preferences}
+                  setPreferences={setPreferences}
+                  frameless
+                  showTitle={false}
+                />
               </div>
             </div>
           </div>

@@ -2,7 +2,7 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { MapPin, Droplets, Flame, Bed, Star, Heart, Ban } from 'lucide-react';
 
-const RefugeCard = ({ refuge, score, onSelect, layout = 'grid', isStarred, onToggleStar, isLiked, onToggleLike, isDisliked, onToggleDislike }) => {
+const RefugeCard = ({ refuge, score, onSelect, layout = 'grid', isStarred, onToggleStar, isLiked, onToggleLike, isDisliked, onToggleDislike, onHover, onHoverEnd }) => {
   const { nom, coord, details, photos, remarks, places } = refuge.properties;
 
   const hasWater = details?.water && !details.water.toLowerCase().includes('non');
@@ -18,6 +18,8 @@ const RefugeCard = ({ refuge, score, onSelect, layout = 'grid', isStarred, onTog
       animate={{ opacity: 1, y: 0 }}
       whileHover={{ y: -2, boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }}
       onClick={() => onSelect(refuge)}
+      onMouseEnter={onHover}
+      onMouseLeave={onHoverEnd}
       style={{
         overflow: 'hidden',
         display: 'flex',

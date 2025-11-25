@@ -1,3 +1,5 @@
+import { Heart, KeyRound, Map, Star } from 'lucide-react';
+
 const FilterPanel = ({ draft, onChange, onReset, massifs = [] }) => {
 
 
@@ -103,40 +105,64 @@ const FilterPanel = ({ draft, onChange, onReset, massifs = [] }) => {
         />
       </div>
 
-      <div className="filter-block" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <label>Inclure refuges fermés</label>
-        <input
-          type="checkbox"
-          checked={draft.includeClosed}
-          onChange={(e) => onChange({ ...draft, includeClosed: e.target.checked })}
-        />
+      <div className="filter-block toggle-row">
+        <div className="filter-label">
+          <KeyRound size={16} />
+          <span>Inclure refuges fermés</span>
+        </div>
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={draft.includeClosed}
+            onChange={(e) => onChange({ ...draft, includeClosed: e.target.checked })}
+          />
+          <span className="slider" />
+        </label>
       </div>
 
-      <div className="filter-block" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <label>Favoris uniquement</label>
-        <input
-          type="checkbox"
-          checked={draft.showFavorites || false}
-          onChange={(e) => onChange({ ...draft, showFavorites: e.target.checked })}
-        />
+      <div className="filter-block toggle-row">
+        <div className="filter-label">
+          <Star size={16} />
+          <span>Favoris uniquement</span>
+        </div>
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={draft.showFavorites || false}
+            onChange={(e) => onChange({ ...draft, showFavorites: e.target.checked })}
+          />
+          <span className="slider" />
+        </label>
       </div>
 
-      <div className="filter-block" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <label>Aimés uniquement</label>
-        <input
-          type="checkbox"
-          checked={draft.showLiked || false}
-          onChange={(e) => onChange({ ...draft, showLiked: e.target.checked })}
-        />
+      <div className="filter-block toggle-row">
+        <div className="filter-label">
+          <Heart size={16} />
+          <span>Aimés uniquement</span>
+        </div>
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={draft.showLiked || false}
+            onChange={(e) => onChange({ ...draft, showLiked: e.target.checked })}
+          />
+          <span className="slider" />
+        </label>
       </div>
 
-      <div className="filter-block" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <label>Filtrer par carte</label>
-        <input
-          type="checkbox"
-          checked={draft.useMapFilter || false}
-          onChange={(e) => onChange({ ...draft, useMapFilter: e.target.checked })}
-        />
+      <div className="filter-block toggle-row">
+        <div className="filter-label">
+          <Map size={16} />
+          <span>Filtrer par carte</span>
+        </div>
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={draft.useMapFilter || false}
+            onChange={(e) => onChange({ ...draft, useMapFilter: e.target.checked })}
+          />
+          <span className="slider" />
+        </label>
       </div>
 
     </div>

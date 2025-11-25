@@ -1,7 +1,7 @@
 import React from 'react';
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer } from 'recharts';
 
-const SpiderChart = ({ preferences, setPreferences, compact = false, frameless = false }) => {
+const SpiderChart = ({ preferences, setPreferences, compact = false, frameless = false, showTitle = true }) => {
   const data = [
     { subject: 'Confort', A: preferences.comfort, fullMark: 100 },
     { subject: 'Eau', A: preferences.water, fullMark: 100 },
@@ -29,7 +29,7 @@ const SpiderChart = ({ preferences, setPreferences, compact = false, frameless =
       }}
     >
       <div style={{ flex: '1 1 260px' }}>
-        {!compact && <h2 style={{ marginBottom: '1.5rem' }}>Definir votre refuge ideal</h2>}
+        {!compact && showTitle && <h2 style={{ marginBottom: '1.5rem' }}>Definir votre refuge ideal</h2>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {Object.keys(preferences).map((key) => (
             <div key={key}>
