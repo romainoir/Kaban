@@ -235,7 +235,7 @@ h3 {
 }
 
 .marker-container.hovered .hut-marker {
-  transform: scale(1.18) translateY(-2px);
+  transform: scale(1.3) translateY(-2px);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35), 0 0 0 8px rgba(46, 125, 50, 0.18);
   filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.45));
 }
