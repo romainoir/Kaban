@@ -1,0 +1,679 @@
+import React, { useMemo, useState, useEffect, useRef } from 'react';
+import maplibregl from 'maplibre-gl';
+import { Maximize2 } from 'lucide-react';
+import 'maplibre-gl/dist/maplibre-gl.css';
+
+const GeoFilterMap = ({
+  refuges,
+  onBoundsChange,
+  activeBounds,
+  useMapFilter,
+  onToggleMapFilter,
+  onResetBounds,
+  compact = false,
+  title = 'Filtre geographique',
+  subtitle = 'La liste se met a jour automatiquement en fonction du cadre de carte.',
+  onExpand,
+  showControls = true,
+  initialView = { center: [6.4, 45.2], zoom: 6 },
+  onViewChange = () => { },
+  onSelectMarker,
+  selectedMassif = null,
+  selectedMassifPolygon = null,
+}) => {
+  const mapRef = useRef(null);
+  const containerRef = useRef(null);
+  const markersRef = useRef(new Map());
+  const thumbCacheRef = useRef(new Map());
+  const syncRequestRef = useRef(() => { });
+  const latestDataRef = useRef([]);
+  const [liveBounds, setLiveBounds] = useState(null);
+  const fitHash = useRef('');
+
+  // --- Hover Logic ---
+  const hoverPreviewRef = useRef(null);
+  const lastMouseRef = useRef({ x: 0, y: 0 });
+  const hoverShownRef = useRef(false);
+
+  const updateHoverPos = () => {
+    if (!hoverShownRef.current || !hoverPreviewRef.current) return;
+    hoverPreviewRef.current.style.left = lastMouseRef.current.x + 'px';
+    hoverPreviewRef.current.style.top = lastMouseRef.current.y + 'px';
+  };
+
+  const showHover = (url, title) => {
+    if (!hoverPreviewRef.current) return;
+    hoverPreviewRef.current.innerHTML = '';
+
+    if (title) {
+      const titleEl = document.createElement('div');
+      titleEl.className = 'hover-title';
+      titleEl.textContent = title;
+      hoverPreviewRef.current.appendChild(titleEl);
+    }
+
+    if (url) {
+      const img = document.createElement('img');
+      img.referrerPolicy = 'no-referrer';
+      img.src = url;
+      hoverPreviewRef.current.appendChild(img);
+    }
+
+    hoverPreviewRef.current.classList.add('open');
+    hoverShownRef.current = true;
+    updateHoverPos();
+  };
+
+  const hideHover = () => {
+    if (!hoverPreviewRef.current) return;
+    hoverPreviewRef.current.classList.remove('open');
+    hoverShownRef.current = false;
+  };
+
+  const geoFeatures = useMemo(
+    () =>
+      refuges
+        .map((r) => {
+          const coords = r.geometry?.coordinates;
+          if (!coords || coords.length < 2) return null;
+          return {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: coords },
+            properties: r.properties,
+          };
+        })
+        .filter(Boolean),
+    [refuges]
+  );
+
+  const reset = () => onResetBounds();
+
+  // Initialize maplibre
+  useEffect(() => {
+    if (mapRef.current || !containerRef.current) return;
+
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
+      center: initialView?.center || [6.4, 45.2],
+      zoom: initialView?.zoom ?? (compact ? 5.5 : 6),
+      pitch: compact ? 0 : 45, // Add pitch for 3D view
+      bearing: 0,
+      renderWorldCopies: false,
+      attributionControl: false,
+    });
+
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
+
+    if (!compact) {
+      map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    }
+
+    // PRIORITY: Load markers first (immediately on style load)
+    map.on('load', () => {
+      // Add refuges source and layers FIRST
+      map.addSource('refuges', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+        cluster: true,
+        clusterRadius: 60,
+        clusterMaxZoom: 16,
+      });
+
+      map.addLayer({
+        id: 'ml-refuges-clusters',
+        type: 'circle',
+        source: 'refuges',
+        filter: ['has', 'point_count'],
+        paint: { 'circle-opacity': 0, 'circle-radius': 1 },
+      });
+
+      map.addLayer({
+        id: 'ml-refuges-counts',
+        type: 'symbol',
+        source: 'refuges',
+        filter: ['has', 'point_count'],
+        layout: {
+          'text-field': '{point_count_abbreviated}',
+          'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+          'text-size': 12,
+        },
+        paint: {
+          'text-opacity': 0,
+        },
+      });
+
+      map.addLayer({
+        id: 'ml-refuges-points',
+        type: 'circle',
+        source: 'refuges',
+        filter: ['!', ['has', 'point_count']],
+        paint: { 'circle-opacity': 0, 'circle-radius': 1 },
+      });
+
+      // Trigger initial sync
+      syncRequestRef.current?.(true);
+    });
+
+    // SECONDARY: Load terrain and hillshade after markers are ready
+    if (!compact) {
+      map.once('idle', () => {
+        // Wait a bit to ensure markers are displayed first
+        setTimeout(() => {
+          if (!map.getSource('terrain')) {
+            // Add terrain source
+            map.addSource('terrain', {
+              type: 'raster-dem',
+              url: 'https://tiles.mapterhorn.com/tilejson.json',
+              tileSize: 256,
+            });
+
+            // Set terrain on the map
+            map.setTerrain({
+              source: 'terrain',
+              exaggeration: 1.5,
+            });
+
+            // Add hillshade layer for better visualization
+            map.addSource('hillshade', {
+              type: 'raster-dem',
+              url: 'https://tiles.mapterhorn.com/tilejson.json',
+              tileSize: 256,
+            });
+
+            map.addLayer({
+              id: 'hillshade-layer',
+              type: 'hillshade',
+              source: 'hillshade',
+              paint: {
+                'hillshade-exaggeration': 0.3,
+                'hillshade-shadow-color': '#000000',
+              },
+            }); // Will be below refuge markers which are already added
+          }
+        }, 100); // Small delay to ensure markers render first
+      });
+    }
+
+    if (!compact) {
+      // Add custom terrain toggle control
+      class TerrainControl {
+        constructor() {
+          this._terrainEnabled = true;
+        }
+
+        onAdd(map) {
+          this._map = map;
+          this._container = document.createElement('div');
+          this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group';
+
+          this._button = document.createElement('button');
+          this._button.type = 'button';
+          this._button.className = 'maplibregl-ctrl-terrain';
+          this._button.title = 'Toggle 3D terrain';
+          this._button.innerHTML = '⛰️';
+          this._button.style.fontSize = '16px';
+          this._button.style.fontWeight = 'bold';
+
+          this._button.onclick = () => {
+            this._terrainEnabled = !this._terrainEnabled;
+
+            if (this._terrainEnabled) {
+              this._map.setTerrain({
+                source: 'terrain',
+                exaggeration: 1.5,
+              });
+              this._map.setPitch(45);
+              this._map.setLayoutProperty('hillshade-layer', 'visibility', 'visible');
+              this._button.style.backgroundColor = 'rgba(0, 122, 255, 0.2)';
+            } else {
+              this._map.setTerrain(null);
+              this._map.setPitch(0);
+              this._map.setLayoutProperty('hillshade-layer', 'visibility', 'none');
+              this._button.style.backgroundColor = '';
+            }
+          };
+
+          // Start with terrain enabled
+          this._button.style.backgroundColor = 'rgba(0, 122, 255, 0.2)';
+
+          this._container.appendChild(this._button);
+          return this._container;
+        }
+
+        onRemove() {
+          this._container.parentNode.removeChild(this._container);
+          this._map = undefined;
+        }
+      }
+
+      map.addControl(new TerrainControl(), 'top-right');
+    }
+    mapRef.current = map;
+
+    const handleMoveEnd = () => {
+      const b = map.getBounds();
+      const bounds = { north: b.getNorth(), south: b.getSouth(), east: b.getEast(), west: b.getWest() };
+      setLiveBounds(bounds);
+      const c = map.getCenter();
+      onViewChange({ center: [c.lng, c.lat], zoom: map.getZoom() });
+    };
+
+    let syncTimeout;
+    const requestSync = (immediate) => {
+      if (syncTimeout) clearTimeout(syncTimeout);
+      if (immediate) {
+        syncMarkers();
+      } else {
+        syncTimeout = setTimeout(syncMarkers, 50);
+      }
+    };
+    syncRequestRef.current = requestSync;
+
+    const syncMarkers = () => {
+      if (!map.getLayer('ml-refuges-clusters') || !map.getLayer('ml-refuges-points')) return;
+      const features = map.queryRenderedFeatures({ layers: ['ml-refuges-clusters', 'ml-refuges-points'] });
+      const nextMarkers = new Set();
+
+      const handleSelectMarker = (id) => {
+        if (!onSelectMarker) return;
+        const feature = latestDataRef.current.find((f) => f.properties.id === id);
+        if (feature) onSelectMarker(feature);
+      };
+
+      features.forEach((f) => {
+        const isCluster = !!f.properties.cluster_id;
+        const id = isCluster ? `c-${f.properties.cluster_id}` : `p-${f.properties.id || f.id}`;
+        nextMarkers.add(id);
+
+        if (!markersRef.current.has(id)) {
+          const marker = isCluster
+            ? createRefugeCluster(f, map, thumbCacheRef.current)
+            : createRefugeMarker(f, map, handleSelectMarker, { showHover, hideHover, lastMouseRef, updateHoverPos, compact });
+          marker.addTo(map);
+          markersRef.current.set(id, marker);
+        } else {
+          markersRef.current.get(id).setLngLat(f.geometry.coordinates);
+        }
+      });
+
+      for (const [id, marker] of markersRef.current) {
+        if (!nextMarkers.has(id)) {
+          marker.remove();
+          markersRef.current.delete(id);
+        }
+      }
+    };
+
+    map.on('moveend', handleMoveEnd);
+    map.on('move', () => requestSync(false));
+    map.on('zoom', () => requestSync(false));
+    map.on('idle', () => requestSync(true));
+
+    // cleanup
+    return () => {
+      if (syncTimeout) clearTimeout(syncTimeout);
+      syncRequestRef.current = () => { };
+      map.remove();
+      mapRef.current = null;
+      markersRef.current.clear();
+    };
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compact]);
+
+  // Update data when refuges change
+  useEffect(() => {
+    latestDataRef.current = geoFeatures;
+    const map = mapRef.current;
+    if (!map) return;
+    const source = map.getSource('refuges');
+    if (!source) return;
+
+    source.setData({ type: 'FeatureCollection', features: geoFeatures });
+
+    // Fit to results (avoid spamming by hashing length + first coords)
+    if (geoFeatures.length) {
+      const first = geoFeatures[0].geometry.coordinates.join(',');
+      const hash = `${geoFeatures.length}-${first}`;
+      if (hash !== fitHash.current) {
+        fitHash.current = hash;
+        const bounds = geoFeatures.reduce(
+          (acc, f) => {
+            const [lon, lat] = f.geometry.coordinates;
+            acc.west = Math.min(acc.west, lon);
+            acc.east = Math.max(acc.east, lon);
+            acc.south = Math.min(acc.south, lat);
+            acc.north = Math.max(acc.north, lat);
+            return acc;
+          },
+          { west: Infinity, east: -Infinity, south: Infinity, north: -Infinity }
+        );
+        if (isFinite(bounds.west)) {
+          map.fitBounds(
+            [
+              [bounds.west, bounds.south],
+              [bounds.east, bounds.north],
+            ],
+            { padding: 30, maxZoom: 12, duration: 0 }
+          );
+        }
+      }
+    }
+
+    // Re-sync markers
+    syncRequestRef.current(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [geoFeatures]);
+
+  useEffect(() => {
+    if (liveBounds) onBoundsChange(liveBounds);
+  }, [liveBounds, onBoundsChange]);
+
+  // Watch for initialView changes (e.g., from search) and update map
+  useEffect(() => {
+    if (!mapRef.current || !initialView) return;
+
+    const map = mapRef.current;
+    const currentCenter = map.getCenter();
+    const currentZoom = map.getZoom();
+
+    // Check if view has changed significantly (avoid infinite loops)
+    const centerChanged =
+      Math.abs(currentCenter.lng - initialView.center[0]) > 0.01 ||
+      Math.abs(currentCenter.lat - initialView.center[1]) > 0.01;
+    const zoomChanged = Math.abs(currentZoom - initialView.zoom) > 0.5;
+
+    if (centerChanged || zoomChanged) {
+      map.flyTo({
+        center: initialView.center,
+        zoom: initialView.zoom,
+        duration: 1500,
+      });
+    }
+  }, [initialView]);
+
+  // Display selected massif polygon
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const map = mapRef.current;
+
+    // Remove existing massif layer and source if any
+    if (map.getLayer('massif-polygon-fill')) {
+      map.removeLayer('massif-polygon-fill');
+    }
+    if (map.getLayer('massif-polygon-outline')) {
+      map.removeLayer('massif-polygon-outline');
+    }
+    if (map.getSource('massif-polygon')) {
+      map.removeSource('massif-polygon');
+    }
+
+    // Add new massif polygon if selected
+    if (selectedMassif && selectedMassifPolygon) {
+      const polygon = selectedMassifPolygon;
+      if (polygon) {
+        try {
+          map.addSource('massif-polygon', {
+            type: 'geojson',
+            data: {
+              type: 'Feature',
+              geometry: polygon
+            }
+          });
+
+          map.addLayer({
+            id: 'massif-polygon-fill',
+            type: 'fill',
+            source: 'massif-polygon',
+            paint: {
+              'fill-color': '#2e7d32',
+              'fill-opacity': 0.1
+            }
+          });
+
+          map.addLayer({
+            id: 'massif-polygon-outline',
+            type: 'line',
+            source: 'massif-polygon',
+            paint: {
+              'line-color': '#2e7d32',
+              'line-width': 2,
+              'line-opacity': 0.6
+            }
+          });
+
+          // Fit map to polygon bounds - calculate bbox manually
+          let allCoords = [];
+          if (polygon.type === 'MultiPolygon') {
+            polygon.coordinates.forEach(poly => {
+              poly.forEach(ring => {
+                allCoords = allCoords.concat(ring);
+              });
+            });
+          } else if (polygon.type === 'Polygon') {
+            polygon.coordinates.forEach(ring => {
+              allCoords = allCoords.concat(ring);
+            });
+          }
+
+          if (allCoords.length > 0) {
+            const lngs = allCoords.map(coord => coord[0]);
+            const lats = allCoords.map(coord => coord[1]);
+
+            const bbox = [
+              Math.min(...lngs),
+              Math.min(...lats),
+              Math.max(...lngs),
+              Math.max(...lats)
+            ];
+
+            map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], {
+              padding: 20,
+              duration: 1000
+            });
+          }
+        } catch (error) {
+          console.error('Error adding massif polygon:', error);
+        }
+      }
+    }
+  }, [selectedMassif]);
+
+
+  return (
+    <div className="glass-panel" style={{
+      padding: '0',
+      background: 'transparent',
+      width: '100%',
+      height: compact ? 'auto' : '100%',
+      display: 'flex',
+      flexDirection: 'column',
+      border: 'none',
+      boxShadow: 'none'
+    }}>
+
+
+      <div className="map-shell" style={{ width: '100%', flex: 1, display: 'flex', flexDirection: 'column' }} onWheel={(e) => e.stopPropagation()}>
+        <div
+          ref={containerRef}
+          className="maplibre-container"
+          style={{ height: compact ? '200px' : '100%', width: '100%', flex: compact ? 'none' : 1, minHeight: compact ? 'auto' : '360px' }}
+        />
+        <div id="hoverPreview" ref={hoverPreviewRef}></div>
+      </div>
+    </div>
+  );
+};
+
+export default GeoFilterMap;
+
+// --- Marker helpers ---
+const REFUGE_ICON =
+  'data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" fill=\"none\" stroke=\"%23ffffff\" stroke-width=\"3\"><path fill=\"%232e7d32\" d=\"M8 30L32 12l24 18v20a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z\"/><path d=\"M24 52V34a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v18\"/><path d=\"M12 32l20-15 20 15\"/></svg>';
+
+function preloadImage(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.referrerPolicy = 'no-referrer';
+    img.onload = () => resolve(true);
+    img.onerror = () => resolve(false);
+    img.src = url;
+  });
+}
+
+function extractPhotos(p) {
+  let photos = p.photos || p.photo || p.image;
+  if (typeof photos === 'string') {
+    try {
+      photos = JSON.parse(photos);
+    } catch (e) {
+      // treat as single url if not json
+      if (photos.startsWith('http')) photos = [photos];
+      else photos = [];
+    }
+  }
+  if (!Array.isArray(photos)) photos = [];
+  return photos;
+}
+
+function getRefugePrimaryPhoto(p) {
+  const photos = extractPhotos(p);
+  if (photos.length) return photos[photos.length - 1]; // Use last photo
+  return p.thumbnail || '';
+}
+
+function createRefugeMarker(f, map, onSelect, hoverCtx) {
+  // console.log('createRefugeMarker', f.properties.nom, 'hoverCtx:', !!hoverCtx, 'compact:', hoverCtx?.compact);
+  const p = f.properties || {};
+  const el = document.createElement('div');
+  el.className = 'marker-container';
+
+  const hut = document.createElement('div');
+  hut.className = 'hut-marker';
+
+  const status = (p.status || p.etat?.valeur || '').toLowerCase();
+  if (status.includes('ferm') || status.includes('detru')) hut.classList.add('is-closed');
+
+  const photo = getRefugePrimaryPhoto(p);
+  if (photo) {
+    hut.style.backgroundImage = `url('${photo}')`;
+    hut.style.backgroundSize = 'cover';
+    hut.style.backgroundPosition = 'center';
+  } else {
+    const icon = document.createElement('img');
+    icon.className = 'icon';
+    icon.src = REFUGE_ICON;
+    hut.appendChild(icon);
+  }
+
+  if (p.places?.valeur) {
+    const badge = document.createElement('div');
+    badge.className = 'hut-badge';
+    badge.textContent = p.places.valeur;
+    hut.appendChild(badge);
+  }
+
+  el.appendChild(hut);
+
+  // Hover events (only if not compact and hoverCtx provided)
+  if (hoverCtx && !hoverCtx.compact) {
+    const { showHover, hideHover, lastMouseRef, updateHoverPos } = hoverCtx;
+
+    el.addEventListener('mouseenter', (e) => {
+      const mapRect = map.getContainer().getBoundingClientRect();
+      lastMouseRef.current.x = e.clientX - mapRect.left;
+      lastMouseRef.current.y = e.clientY - mapRect.top;
+      showHover(photo, p.nom);
+    });
+
+    el.addEventListener('mousemove', (e) => {
+      const mapRect = map.getContainer().getBoundingClientRect();
+      lastMouseRef.current.x = e.clientX - mapRect.left;
+      lastMouseRef.current.y = e.clientY - mapRect.top;
+      updateHoverPos();
+    });
+
+    el.addEventListener('mouseleave', hideHover);
+  }
+
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // If we have an onSelect handler (for full screen), call it.
+    // Otherwise fall back to zoom behavior (for mini map).
+    if (onSelect && hoverCtx && !hoverCtx.compact) {
+      onSelect(p.id);
+    }
+
+    map.easeTo({ center: f.geometry.coordinates, zoom: Math.max(map.getZoom(), 11) });
+  });
+
+  return new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(f.geometry.coordinates);
+}
+
+function createRefugeCluster(f, map, thumbCache) {
+  const cid = f.properties.cluster_id;
+  const count = f.properties.point_count;
+  const el = document.createElement('div');
+  el.className = 'marker-container';
+
+  const box = document.createElement('div');
+  box.className = 'cluster-hut';
+  const span = document.createElement('span');
+  span.textContent = count;
+  box.appendChild(span);
+  el.appendChild(box);
+
+  const cacheKey = `refuges:${cid}`;
+  const cached = thumbCache.get(cacheKey);
+
+  const setFallback = () => {
+    box.classList.add('no-photo');
+    box.style.backgroundImage = `url('${REFUGE_ICON}')`;
+  };
+
+  const setImage = (url) => {
+    box.classList.remove('no-photo');
+    box.style.backgroundImage = `url('${url}')`;
+    box.style.backgroundSize = 'cover';
+    box.style.backgroundPosition = 'center';
+  };
+
+  if (cached) {
+    setImage(cached);
+  } else {
+    const source = map.getSource('refuges');
+    if (source && source.getClusterLeaves) {
+      source
+        .getClusterLeaves(cid, 10, 0)
+        .then((leaves) => {
+          const leaf = leaves.find((l) => getRefugePrimaryPhoto(l.properties));
+          if (leaf) {
+            const url = getRefugePrimaryPhoto(leaf.properties);
+            if (url) {
+              preloadImage(url).then((ok) => {
+                if (ok) {
+                  thumbCache.set(cacheKey, url);
+                  setImage(url);
+                } else {
+                  setFallback();
+                }
+              });
+            } else {
+              setFallback();
+            }
+          } else {
+            setFallback();
+          }
+        })
+        .catch(setFallback);
+    }
+  }
+
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    map.easeTo({ center: f.geometry.coordinates, zoom: map.getZoom() + 1.5 });
+  });
+
+  return new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(f.geometry.coordinates);
+}

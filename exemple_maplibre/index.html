@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="fr">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Xplore Research - Webcams & Refuges</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+
+  <!-- MapLibre CSS -->
+  <link href="https://unpkg.com/maplibre-gl@5.10.0/dist/maplibre-gl.css" rel="stylesheet" />
+
+  <!-- Custom Styles -->
+  <link href="style.css" rel="stylesheet" />
+
+  <!-- MapLibre JS -->
+  <script src="https://unpkg.com/maplibre-gl@5.10.0/dist/maplibre-gl.js"></script>
+</head>
+
+<body>
+  <div id="map"></div>
+  <div id="hoverPreview" aria-hidden="true"></div>
+  <div id="viewer" aria-hidden="true"></div>
+
+  <!-- SVG Filters for Liquid Glass Effect -->
+  <svg style="display: none;">
+    <defs>
+      <filter id="liquid">
+        <feTurbulence type="fractalNoise" baseFrequency="0.01 0.01" numOctaves="3" result="noise" />
+        <feDisplacementMap in="SourceGraphic" in2="noise" scale="20" xChannelSelector="R" yChannelSelector="G" />
+      </filter>
+      <filter id="glass-glow">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur" />
+        <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo" />
+        <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+      </filter>
+    </defs>
+  </svg>
+
+  <!-- App Logic -->
+  <script src="app.js"></script>
+</body>
+
+</html>
