@@ -159,27 +159,45 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       return Math.min(Math.max(baseDistance * scaling, 180), 1400);
     };
 
+    const getTerrainElevation = (lng, lat) => {
+      return mapInstance.queryTerrainElevation(new maplibregl.LngLat(lng, lat)) || 0;
+    };
+
     const buildCameraPosition = ({ bearing, pitch, distance, minAltitude }) => {
-      const elevation = (mapInstance.queryTerrainElevation(selectedLocation) || 0) + minAltitude;
-      const targetCoord = maplibregl.MercatorCoordinate.fromLngLat(selectedLocation, elevation);
-      const metersToMercator = targetCoord.meterInMercatorCoordinateUnits();
+      const centerElev = analyzedTerrain?.groundElevation ?? getTerrainElevation(selectedLocation.lng, selectedLocation.lat);
+      const targetElev = centerElev + minAltitude;
 
       const pitchRad = toRadians(pitch);
       const bearingRad = toRadians(bearing);
 
-      const horizontalDistance = Math.max(60, distance * Math.cos(pitchRad));
-      const verticalDistance = distance * Math.sin(pitchRad);
+      // Calculate camera position relative to target
+      const horizontalDist = distance * Math.cos(pitchRad);
+      const verticalDist = distance * Math.sin(pitchRad);
 
-      const offsetX = Math.sin(bearingRad) * horizontalDistance * metersToMercator;
-      const offsetY = Math.cos(bearingRad) * horizontalDistance * metersToMercator;
+      const offsetLng = (Math.sin(bearingRad) * horizontalDist) / 111320 / Math.cos(toRadians(selectedLocation.lat));
+      const offsetLat = (Math.cos(bearingRad) * horizontalDist) / 111320;
 
-      const position = new maplibregl.MercatorCoordinate(
-        targetCoord.x + offsetX,
-        targetCoord.y + offsetY,
-        targetCoord.z + verticalDistance * metersToMercator
+      const cameraLng = selectedLocation.lng + offsetLng;
+      const cameraLat = selectedLocation.lat + offsetLat;
+
+      // Check terrain height at camera position
+      const cameraTerrainElev = getTerrainElevation(cameraLng, cameraLat);
+      const cameraTargetAlt = targetElev + verticalDist;
+
+      // Ensure camera is at least 50m above terrain
+      const safeAlt = Math.max(cameraTargetAlt, cameraTerrainElev + 50);
+
+      const cameraPos = maplibregl.MercatorCoordinate.fromLngLat(
+        { lng: cameraLng, lat: cameraLat },
+        safeAlt
       );
 
-      return { position, targetCoord };
+      const targetCoord = maplibregl.MercatorCoordinate.fromLngLat(
+        selectedLocation,
+        targetElev
+      );
+
+      return { position: cameraPos, targetCoord };
     };
 
     const applyFreeCamera = ({ position, targetCoord }) => {
@@ -189,7 +207,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       mapInstance.setFreeCameraOptions(camera);
     };
 
-    const animateCameraTransition = (nextPosition, duration = 1400, onFinish) => {
+    const animateCameraTransition = (nextPosition, duration = 2000, onFinish) => {
       if (!nextPosition) return;
 
       if (cameraTransitionFrame) {
@@ -198,27 +216,46 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       }
 
       const startCamera = mapInstance.getFreeCameraOptions();
-      const startPosition = startCamera.position || nextPosition.position;
+      const startPos = startCamera.position;
+      const endPos = nextPosition.position;
       const startTime = performance.now();
+
+      // Calculate arc height based on distance
+      const dist = Math.sqrt(
+        Math.pow(endPos.x - startPos.x, 2) +
+        Math.pow(endPos.y - startPos.y, 2)
+      );
+      const arcHeight = Math.min(0.5, dist * 2); // Cap arc height
 
       const step = () => {
         const now = performance.now();
-        const t = Math.min(1, (now - startTime) / duration);
-        const eased = t * t * (3 - 2 * t);
+        const progress = Math.min(1, (now - startTime) / duration);
 
-        const x = startPosition.x + (nextPosition.position.x - startPosition.x) * eased;
-        const y = startPosition.y + (nextPosition.position.y - startPosition.y) * eased;
-        const z = startPosition.z + (nextPosition.position.z - startPosition.z) * eased;
+        // Cubic ease-in-out
+        const t = progress < 0.5
+          ? 4 * progress * progress * progress
+          : 1 - Math.pow(-2 * progress + 2, 3) / 2;
 
-        applyFreeCamera({ position: new maplibregl.MercatorCoordinate(x, y, z), targetCoord: nextPosition.targetCoord });
+        // Interpolate position with arc
+        const x = startPos.x + (endPos.x - startPos.x) * t;
+        const y = startPos.y + (endPos.y - startPos.y) * t;
+        let z = startPos.z + (endPos.z - startPos.z) * t;
 
-        if (t < 1) {
+        // Add arc to Z (altitude)
+        z += arcHeight * Math.sin(progress * Math.PI);
+
+        const currentPos = new maplibregl.MercatorCoordinate(x, y, z);
+
+        applyFreeCamera({
+          position: currentPos,
+          targetCoord: nextPosition.targetCoord
+        });
+
+        if (progress < 1) {
           cameraTransitionFrame = requestAnimationFrame(step);
-        } else if (typeof onFinish === 'function') {
-          cameraTransitionFrame = null;
-          onFinish();
         } else {
           cameraTransitionFrame = null;
+          if (onFinish) onFinish();
         }
       };
 
@@ -269,14 +306,19 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       if (!mapInstance || !analyzedTerrain) return;
       stopOrbit();
 
+      // Recalculate distance based on new zoom
+      const currentZoom = mapInstance.getZoom();
+      const distance = computeOrbitDistance(currentZoom, analyzedTerrain.baseDistance);
+
       const cameraPosition = buildCameraPosition({
         bearing: mapInstance.getBearing(),
         pitch: analyzedTerrain.pitch,
-        distance: computeOrbitDistance(mapInstance.getZoom(), analyzedTerrain.baseDistance),
+        distance,
         minAltitude: analyzedTerrain.safetyMargin,
       });
 
-      animateCameraTransition(cameraPosition, 800, () => {
+      // Quick smooth transition to new safe position
+      animateCameraTransition(cameraPosition, 600, () => {
         resetIdleTimer();
         startOrbit();
       });
@@ -439,7 +481,6 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             const offset = 0.001; // ~100m
 
             // 1. Calculate Slope / Orientation
-            // We need to handle cases where elevation is not yet available
             const getElev = (lng, lat) => mapInstance.queryTerrainElevation(new maplibregl.LngLat(lng, lat)) || 0;
 
             const eC = getElev(center.lng, center.lat);
@@ -450,7 +491,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
             // If elevation data is missing (0), we might get wrong results, but it's a fallback
             if (eN === 0 && eS === 0 && eE === 0 && eW === 0) {
-              return { rotation: 0, pitch: 60, zoom: 15, safetyMargin: 60, baseDistance: 420 };
+              return { rotation: 0, pitch: 60, zoom: 15, safetyMargin: 60, baseDistance: 420, groundElevation: 0 };
             }
 
             const dz_dy = eN - eS; // North - South
@@ -460,8 +501,6 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             const downhillAngle = Math.atan2(-dz_dy, -dz_dx);
 
             // Model rotation: Assuming model front is +Z (North in our aligned space)
-            // East (0) -> Rotate -90 (-PI/2)
-            // North (PI/2) -> Rotate 0
             const rotation = downhillAngle - Math.PI / 2;
 
             // 2. Analyze Surroundings for Camera Safety
@@ -497,14 +536,14 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             const safetyMargin = Math.max(40, 20 + Math.max(0, maxElevDiff));
             const baseDistance = 420 + Math.max(0, maxElevDiff * 0.8);
 
-            return { rotation, pitch, zoom, safetyMargin, baseDistance };
+            return { rotation, pitch, zoom, safetyMargin, baseDistance, groundElevation: eC };
           };
 
           // Wait a bit for terrain to potentially load if it hasn't
           // But we are in an async flow, so we can just try.
-          const { rotation, pitch, zoom, safetyMargin, baseDistance } = analyzeTerrain();
+          const { rotation, pitch, zoom, safetyMargin, baseDistance, groundElevation } = analyzeTerrain();
 
-          analyzedTerrain = { pitch, safetyMargin, baseDistance };
+          analyzedTerrain = { pitch, safetyMargin, baseDistance, groundElevation };
 
           model.rotation.y = rotation;
 
