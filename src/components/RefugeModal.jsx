@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, MapPin, Droplets, Flame, Bed, ExternalLink, TreePine, Tent, MessageSquare, ChevronLeft, ChevronRight, Star, Heart, Ban } from 'lucide-react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { createRefugeMarker } from './GeoFilterMap';
+import { applyOverlayLayers, createRefugeMarker, OVERLAY_LAYERS } from './GeoFilterMap';
 
 const CDN_THREE_URL = 'https://esm.sh/three@0.169.0';
 const CDN_GLTF_URL = 'https://esm.sh/three@0.169.0/examples/jsm/loaders/GLTFLoader.js';
@@ -52,6 +52,16 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
   const miniMapContainerRef = useRef(null);
   const miniMapRef = useRef(null);
   const expandedMapRef = useRef(null);
+  const overlayVisibilityDefaults = useMemo(
+    () =>
+      OVERLAY_LAYERS.reduce((acc, layer) => {
+        if (!layer.alwaysOn) {
+          acc[layer.id] = !!layer.defaultVisible;
+        }
+        return acc;
+      }, {}),
+    []
+  );
 
   const hasWater = details?.water && !details.water.toLowerCase().includes('non');
   const hasWood = details?.wood && !details.wood.toLowerCase().includes('non');
@@ -115,7 +125,18 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     let mapInstance;
     let selectedLocation;
 
-    const userInteractionEvents = ['dragstart', 'zoomstart', 'rotatestart', 'pitchstart', 'movestart'];
+    const userInteractionEvents = [
+      'dragstart',
+      'zoomstart',
+      'rotatestart',
+      'pitchstart',
+      'movestart',
+      'mousedown',
+      'mouseup',
+      'click',
+      'contextmenu',
+      'wheel',
+    ];
 
     const stopOrbit = () => {
       if (animationFrame) {
@@ -211,6 +232,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       mapInstance.on('remove', stopOrbit);
 
       mapInstance.on('load', async () => {
+        applyOverlayLayers(mapInstance, overlayVisibilityDefaults);
+
         if (!mapInstance.getSource('modal-terrain-dem')) {
           mapInstance.addSource('modal-terrain-dem', {
             type: 'raster-dem',
@@ -343,7 +366,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         mapInstance.remove();
       }
     };
-  }, [mapExpanded, refuge, refuges]);
+  }, [mapExpanded, refuge, refuges, overlayVisibilityDefaults]);
 
   return (
     <AnimatePresence>

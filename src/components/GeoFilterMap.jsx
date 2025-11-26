@@ -26,7 +26,7 @@ function createTilePreviewUrl(template, coords = WMTS_PREVIEW_COORDS) {
   return replacements.reduce((acc, entry) => acc.replace(entry.token, entry.value), template);
 }
 
-const OVERLAY_LAYERS = [
+export const OVERLAY_LAYERS = [
   {
     id: 'ign-orthophotos',
     label: 'Satellite',
@@ -73,6 +73,47 @@ const OVERLAY_LAYERS = [
     defaultOpacity: 0.35,
   },
 ];
+
+export const applyOverlayLayers = (map, overlayVisibility = {}, options = {}) => {
+  if (!map) return;
+
+  const beforeId = options.beforeId;
+
+  OVERLAY_LAYERS.forEach((layer) => {
+    const targetOpacity = layer.defaultOpacity ?? 1;
+
+    if (!map.getSource(layer.sourceId)) {
+      map.addSource(layer.sourceId, {
+        type: 'raster',
+        tiles: [layer.tileTemplate],
+        tileSize: layer.tileSize || 256,
+        attribution: layer.attribution,
+      });
+    }
+
+    if (!map.getLayer(layer.layerId)) {
+      map.addLayer(
+        {
+          id: layer.layerId,
+          type: 'raster',
+          source: layer.sourceId,
+          paint: { 'raster-opacity': targetOpacity },
+        },
+        beforeId
+      );
+    } else {
+      if (beforeId) {
+        map.moveLayer(layer.layerId, beforeId);
+      } else {
+        map.moveLayer(layer.layerId);
+      }
+      map.setPaintProperty(layer.layerId, 'raster-opacity', targetOpacity);
+    }
+
+    const isVisible = layer.alwaysOn || overlayVisibility[layer.id];
+    map.setLayoutProperty(layer.layerId, 'visibility', isVisible ? 'visible' : 'none');
+  });
+};
 
 const GeoFilterMap = ({
   refuges,
@@ -200,41 +241,8 @@ const GeoFilterMap = ({
   const ensureOverlayLayers = (map) => {
     if (!map) return;
 
-    OVERLAY_LAYERS.forEach((layer) => {
-      const targetOpacity = layer.defaultOpacity ?? 1;
-      const beforeId = map.getLayer('ml-refuges-clusters') ? 'ml-refuges-clusters' : undefined;
-
-      if (!map.getSource(layer.sourceId)) {
-        map.addSource(layer.sourceId, {
-          type: 'raster',
-          tiles: [layer.tileTemplate],
-          tileSize: layer.tileSize || 256,
-          attribution: layer.attribution,
-        });
-      }
-
-      if (!map.getLayer(layer.layerId)) {
-        map.addLayer(
-          {
-            id: layer.layerId,
-            type: 'raster',
-            source: layer.sourceId,
-            paint: { 'raster-opacity': targetOpacity },
-          },
-          beforeId
-        );
-      } else {
-        if (beforeId) {
-          map.moveLayer(layer.layerId, beforeId);
-        } else {
-          map.moveLayer(layer.layerId);
-        }
-        map.setPaintProperty(layer.layerId, 'raster-opacity', targetOpacity);
-      }
-
-      const isVisible = layer.alwaysOn || overlayVisibility[layer.id];
-      map.setLayoutProperty(layer.layerId, 'visibility', isVisible ? 'visible' : 'none');
-    });
+    const beforeId = map.getLayer('ml-refuges-clusters') ? 'ml-refuges-clusters' : undefined;
+    applyOverlayLayers(map, overlayVisibility, { beforeId });
   };
 
   const applyMassifPolygon = (map, massif, polygon) => {
@@ -398,12 +406,16 @@ const GeoFilterMap = ({
       bearing: 0,
       renderWorldCopies: false,
       attributionControl: false,
+      pitchWithRotate: false,
     });
+
+    map.dragRotate.disable();
+    map.touchZoomRotate.disableRotation();
 
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
 
     if (!compact) {
-      map.addControl(new maplibregl.NavigationControl(), 'top-right');
+      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
     }
 
     // PRIORITY: Load markers first (immediately on style load)
