@@ -111,7 +111,39 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     if (!mapExpanded || !expandedMapRef.current) return undefined;
 
     let animationFrame;
+    let idleTimeout;
     let mapInstance;
+
+    const userInteractionEvents = ['dragstart', 'zoomstart', 'rotatestart', 'pitchstart', 'movestart'];
+
+    const stopOrbit = () => {
+      if (animationFrame) {
+        cancelAnimationFrame(animationFrame);
+        animationFrame = null;
+      }
+    };
+
+    const orbit = () => {
+      if (!mapInstance) return;
+      mapInstance.setBearing((mapInstance.getBearing() + 0.06) % 360);
+      animationFrame = requestAnimationFrame(orbit);
+    };
+
+    const startOrbit = () => {
+      stopOrbit();
+      animationFrame = requestAnimationFrame(orbit);
+    };
+
+    const resetIdleTimer = () => {
+      if (idleTimeout) clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(startOrbit, 30000);
+    };
+
+    const handleUserInteraction = (event) => {
+      if (!event?.originalEvent) return;
+      stopOrbit();
+      resetIdleTimer();
+    };
 
     const setupExpandedMap = async () => {
       const coords = refuge.geometry?.coordinates || [6.4, 45.2];
@@ -125,6 +157,10 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         pitch: 55,
         bearing: -15,
         attributionControl: true,
+      });
+
+      userInteractionEvents.forEach((eventName) => {
+        mapInstance.on(eventName, handleUserInteraction);
       });
 
       const bounds = new maplibregl.LngLatBounds();
@@ -156,13 +192,6 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         mapInstance.setCenter(coords);
         mapInstance.setZoom(11);
       }
-
-      const stopOrbit = () => {
-        if (animationFrame) {
-          cancelAnimationFrame(animationFrame);
-          animationFrame = null;
-        }
-      };
 
       mapInstance.on('remove', stopOrbit);
 
@@ -256,13 +285,10 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           mapInstance.addLayer(customLayer);
 
-          const orbit = () => {
-            mapInstance.setBearing((mapInstance.getBearing() + 0.06) % 360);
-            animationFrame = requestAnimationFrame(orbit);
-          };
+          mapInstance.easeTo({ center: selectedLocation, pitch: 70, zoom: 14, duration: 800 });
 
-          mapInstance.easeTo({ center: selectedLocation, pitch: 60, duration: 800 });
-          orbit();
+          startOrbit();
+          resetIdleTimer();
         } catch (error) {
           console.error('Failed to load 3D model', error);
         }
@@ -273,7 +299,13 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
     return () => {
       if (animationFrame) cancelAnimationFrame(animationFrame);
-      if (mapInstance) mapInstance.remove();
+      if (idleTimeout) clearTimeout(idleTimeout);
+      if (mapInstance) {
+        userInteractionEvents.forEach((eventName) => {
+          mapInstance.off(eventName, handleUserInteraction);
+        });
+        mapInstance.remove();
+      }
     };
   }, [mapExpanded, refuge, refuges]);
 
