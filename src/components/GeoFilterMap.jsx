@@ -5,6 +5,8 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 
 const WMTS_PREVIEW_COORDS = { z: 12, x: 2072, y: 1475 };
 const IGN_ATTRIBUTION = '© IGN / Geoportail';
+const DEFAULT_BASE_STYLE = 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json';
+const OPENTOPO_BASE_STYLE = 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/accentue.json';
 
 function createIgnTileTemplate(layerName, format = 'image/png') {
   const encodedFormat = encodeURIComponent(format);
@@ -115,6 +117,221 @@ const GeoFilterMap = ({
     }, {})
   );
   const [showLayerMenu, setShowLayerMenu] = useState(false);
+  const currentBaseStyleRef = useRef(DEFAULT_BASE_STYLE);
+
+  const ensureRefugeLayers = (map) => {
+    if (!map.getSource('refuges')) {
+      map.addSource('refuges', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+        cluster: true,
+        clusterRadius: 60,
+        clusterMaxZoom: 16,
+      });
+    }
+
+    if (!map.getLayer('ml-refuges-clusters')) {
+      map.addLayer({
+        id: 'ml-refuges-clusters',
+        type: 'circle',
+        source: 'refuges',
+        filter: ['has', 'point_count'],
+        paint: { 'circle-opacity': 0, 'circle-radius': 1 },
+      });
+    }
+
+    if (!map.getLayer('ml-refuges-counts')) {
+      map.addLayer({
+        id: 'ml-refuges-counts',
+        type: 'symbol',
+        source: 'refuges',
+        filter: ['has', 'point_count'],
+        layout: {
+          'text-field': '{point_count_abbreviated}',
+          'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+          'text-size': 12,
+        },
+        paint: {
+          'text-opacity': 0,
+        },
+      });
+    }
+
+    if (!map.getLayer('ml-refuges-points')) {
+      map.addLayer({
+        id: 'ml-refuges-points',
+        type: 'circle',
+        source: 'refuges',
+        filter: ['!', ['has', 'point_count']],
+        paint: { 'circle-opacity': 0, 'circle-radius': 1 },
+      });
+    }
+
+    const source = map.getSource('refuges');
+    if (source) {
+      source.setData({ type: 'FeatureCollection', features: latestDataRef.current });
+    }
+  };
+
+  const ensureHillshadeLayer = (map) => {
+    if (compact) return;
+
+    if (!map.getSource('hillshade')) {
+      map.addSource('hillshade', {
+        type: 'raster-dem',
+        url: 'https://tiles.mapterhorn.com/tilejson.json',
+        tileSize: 256,
+      });
+    }
+
+    if (!map.getLayer('hillshade-layer')) {
+      map.addLayer({
+        id: 'hillshade-layer',
+        type: 'hillshade',
+        source: 'hillshade',
+        paint: {
+          'hillshade-exaggeration': 0.3,
+          'hillshade-shadow-color': '#000000',
+        },
+      });
+    }
+  };
+
+  const ensureOverlayLayers = (map) => {
+    if (!map) return;
+
+    OVERLAY_LAYERS.forEach((layer) => {
+      const targetOpacity = layer.defaultOpacity ?? 1;
+      const beforeId = map.getLayer('ml-refuges-clusters') ? 'ml-refuges-clusters' : undefined;
+
+      if (!map.getSource(layer.sourceId)) {
+        map.addSource(layer.sourceId, {
+          type: 'raster',
+          tiles: [layer.tileTemplate],
+          tileSize: layer.tileSize || 256,
+          attribution: layer.attribution,
+        });
+      }
+
+      if (!map.getLayer(layer.layerId)) {
+        map.addLayer(
+          {
+            id: layer.layerId,
+            type: 'raster',
+            source: layer.sourceId,
+            paint: { 'raster-opacity': targetOpacity },
+          },
+          beforeId
+        );
+      } else {
+        if (beforeId) {
+          map.moveLayer(layer.layerId, beforeId);
+        } else {
+          map.moveLayer(layer.layerId);
+        }
+        map.setPaintProperty(layer.layerId, 'raster-opacity', targetOpacity);
+      }
+
+      const isVisible = layer.alwaysOn || overlayVisibility[layer.id];
+      map.setLayoutProperty(layer.layerId, 'visibility', isVisible ? 'visible' : 'none');
+    });
+  };
+
+  const applyMassifPolygon = (map, massif, polygon) => {
+    if (!map) return;
+
+    if (map.getLayer('massif-polygon-fill')) {
+      map.removeLayer('massif-polygon-fill');
+    }
+    if (map.getLayer('massif-polygon-outline')) {
+      map.removeLayer('massif-polygon-outline');
+    }
+    if (map.getSource('massif-polygon')) {
+      map.removeSource('massif-polygon');
+    }
+
+    if (massif && polygon) {
+      try {
+        map.addSource('massif-polygon', {
+          type: 'geojson',
+          data: {
+            type: 'Feature',
+            geometry: polygon
+          }
+        });
+
+        map.addLayer({
+          id: 'massif-polygon-fill',
+          type: 'fill',
+          source: 'massif-polygon',
+          paint: {
+            'fill-color': '#2e7d32',
+            'fill-opacity': 0.1
+          }
+        });
+
+        map.addLayer({
+          id: 'massif-polygon-outline',
+          type: 'line',
+          source: 'massif-polygon',
+          paint: {
+            'line-color': '#2e7d32',
+            'line-width': 2,
+            'line-opacity': 0.6
+          }
+        });
+
+        let allCoords = [];
+        if (polygon.type === 'MultiPolygon') {
+          polygon.coordinates.forEach(poly => {
+            poly.forEach(ring => {
+              allCoords = allCoords.concat(ring);
+            });
+          });
+        } else if (polygon.type === 'Polygon') {
+          polygon.coordinates.forEach(ring => {
+            allCoords = allCoords.concat(ring);
+          });
+        }
+
+        if (allCoords.length > 0) {
+          const lngs = allCoords.map(coord => coord[0]);
+          const lats = allCoords.map(coord => coord[1]);
+
+          const bbox = [
+            Math.min(...lngs),
+            Math.min(...lats),
+            Math.max(...lngs),
+            Math.max(...lats)
+          ];
+
+          map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], {
+            padding: 20,
+            duration: 1000
+          });
+        }
+      } catch (error) {
+        console.error('Error adding massif polygon:', error);
+      }
+    }
+  };
+
+  const applyBaseStyle = (styleUrl) => {
+    const map = mapRef.current;
+    if (!map || !styleUrl || currentBaseStyleRef.current === styleUrl) return;
+
+    currentBaseStyleRef.current = styleUrl;
+    setMapReady(false);
+    map.setStyle(styleUrl);
+    map.once('style.load', () => {
+      ensureRefugeLayers(map);
+      ensureHillshadeLayer(map);
+      ensureOverlayLayers(map);
+      applyMassifPolygon(map, selectedMassif, selectedMassifPolygon);
+      syncRequestRef.current?.(true);
+      setMapReady(true);
+    });
+  };
 
   const layerPreviews = useMemo(
     () => Object.fromEntries(OVERLAY_LAYERS.map((layer) => [layer.id, createTilePreviewUrl(layer.tileTemplate)])),
@@ -191,7 +408,7 @@ const GeoFilterMap = ({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json',
+      style: DEFAULT_BASE_STYLE,
       center: initialView?.center || [6.4, 45.2],
       zoom: initialView?.zoom ?? (compact ? 5.5 : 6),
       pitch: 0,
@@ -208,47 +425,7 @@ const GeoFilterMap = ({
 
     // PRIORITY: Load markers first (immediately on style load)
     map.on('load', () => {
-      // Add refuges source and layers FIRST
-      map.addSource('refuges', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] },
-        cluster: true,
-        clusterRadius: 60,
-        clusterMaxZoom: 16,
-      });
-
-      map.addLayer({
-        id: 'ml-refuges-clusters',
-        type: 'circle',
-        source: 'refuges',
-        filter: ['has', 'point_count'],
-        paint: { 'circle-opacity': 0, 'circle-radius': 1 },
-      });
-
-      map.addLayer({
-        id: 'ml-refuges-counts',
-        type: 'symbol',
-        source: 'refuges',
-        filter: ['has', 'point_count'],
-        layout: {
-          'text-field': '{point_count_abbreviated}',
-          'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
-          'text-size': 12,
-        },
-        paint: {
-          'text-opacity': 0,
-        },
-      });
-
-      map.addLayer({
-        id: 'ml-refuges-points',
-        type: 'circle',
-        source: 'refuges',
-        filter: ['!', ['has', 'point_count']],
-        paint: { 'circle-opacity': 0, 'circle-radius': 1 },
-      });
-
-      // Trigger initial sync
+      ensureRefugeLayers(map);
       syncRequestRef.current?.(true);
       setMapReady(true);
     });
@@ -257,23 +434,7 @@ const GeoFilterMap = ({
     if (!compact) {
       map.once('idle', () => {
         setTimeout(() => {
-          if (!map.getSource('hillshade')) {
-            map.addSource('hillshade', {
-              type: 'raster-dem',
-              url: 'https://tiles.mapterhorn.com/tilejson.json',
-              tileSize: 256,
-            });
-
-            map.addLayer({
-              id: 'hillshade-layer',
-              type: 'hillshade',
-              source: 'hillshade',
-              paint: {
-                'hillshade-exaggeration': 0.3,
-                'hillshade-shadow-color': '#000000',
-              },
-            });
-          }
+          ensureHillshadeLayer(map);
         }, 100);
       });
     }
@@ -417,42 +578,16 @@ const GeoFilterMap = ({
     const map = mapRef.current;
     if (!map) return;
 
-    OVERLAY_LAYERS.forEach((layer) => {
-      const targetOpacity = layer.defaultOpacity ?? 1;
-      const beforeId = map.getLayer('ml-refuges-clusters') ? 'ml-refuges-clusters' : undefined;
-
-      if (!map.getSource(layer.sourceId)) {
-        map.addSource(layer.sourceId, {
-          type: 'raster',
-          tiles: [layer.tileTemplate],
-          tileSize: layer.tileSize || 256,
-          attribution: layer.attribution,
-        });
-      }
-
-      if (!map.getLayer(layer.layerId)) {
-        map.addLayer(
-          {
-            id: layer.layerId,
-            type: 'raster',
-            source: layer.sourceId,
-            paint: { 'raster-opacity': targetOpacity },
-          },
-          beforeId
-        );
-      } else {
-        if (beforeId) {
-          map.moveLayer(layer.layerId, beforeId);
-        } else {
-          map.moveLayer(layer.layerId);
-        }
-        map.setPaintProperty(layer.layerId, 'raster-opacity', targetOpacity);
-      }
-
-      const isVisible = layer.alwaysOn || overlayVisibility[layer.id];
-      map.setLayoutProperty(layer.layerId, 'visibility', isVisible ? 'visible' : 'none');
-    });
+    ensureOverlayLayers(map);
   }, [mapReady, overlayVisibility]);
+
+  const isOpenTopoActive = !!overlayVisibility['ign-opentopo'];
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const targetStyle = isOpenTopoActive ? OPENTOPO_BASE_STYLE : DEFAULT_BASE_STYLE;
+    applyBaseStyle(targetStyle);
+  }, [isOpenTopoActive]);
 
   const toggleOverlayLayer = (layerId) => {
     const layer = OVERLAY_LAYERS.find((l) => l.id === layerId);
@@ -514,88 +649,7 @@ const GeoFilterMap = ({
   // Display selected massif polygon
   useEffect(() => {
     if (!mapRef.current) return;
-    const map = mapRef.current;
-
-    // Remove existing massif layer and source if any
-    if (map.getLayer('massif-polygon-fill')) {
-      map.removeLayer('massif-polygon-fill');
-    }
-    if (map.getLayer('massif-polygon-outline')) {
-      map.removeLayer('massif-polygon-outline');
-    }
-    if (map.getSource('massif-polygon')) {
-      map.removeSource('massif-polygon');
-    }
-
-    // Add new massif polygon if selected
-    if (selectedMassif && selectedMassifPolygon) {
-      const polygon = selectedMassifPolygon;
-      if (polygon) {
-        try {
-          map.addSource('massif-polygon', {
-            type: 'geojson',
-            data: {
-              type: 'Feature',
-              geometry: polygon
-            }
-          });
-
-          map.addLayer({
-            id: 'massif-polygon-fill',
-            type: 'fill',
-            source: 'massif-polygon',
-            paint: {
-              'fill-color': '#2e7d32',
-              'fill-opacity': 0.1
-            }
-          });
-
-          map.addLayer({
-            id: 'massif-polygon-outline',
-            type: 'line',
-            source: 'massif-polygon',
-            paint: {
-              'line-color': '#2e7d32',
-              'line-width': 2,
-              'line-opacity': 0.6
-            }
-          });
-
-          // Fit map to polygon bounds - calculate bbox manually
-          let allCoords = [];
-          if (polygon.type === 'MultiPolygon') {
-            polygon.coordinates.forEach(poly => {
-              poly.forEach(ring => {
-                allCoords = allCoords.concat(ring);
-              });
-            });
-          } else if (polygon.type === 'Polygon') {
-            polygon.coordinates.forEach(ring => {
-              allCoords = allCoords.concat(ring);
-            });
-          }
-
-          if (allCoords.length > 0) {
-            const lngs = allCoords.map(coord => coord[0]);
-            const lats = allCoords.map(coord => coord[1]);
-
-            const bbox = [
-              Math.min(...lngs),
-              Math.min(...lats),
-              Math.max(...lngs),
-              Math.max(...lats)
-            ];
-
-            map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], {
-              padding: 20,
-              duration: 1000
-            });
-          }
-        } catch (error) {
-          console.error('Error adding massif polygon:', error);
-        }
-      }
-    }
+    applyMassifPolygon(mapRef.current, selectedMassif, selectedMassifPolygon);
   }, [selectedMassif]);
 
 
