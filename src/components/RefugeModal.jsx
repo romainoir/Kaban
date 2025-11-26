@@ -230,18 +230,20 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           model.traverse((child) => {
             if (!child.isMesh) return;
 
-            const originalMaterial = child.material;
-            const baseColorTexture = originalMaterial?.map || originalMaterial?.emissiveMap || null;
-            const baseColor = originalMaterial?.color ? originalMaterial.color.clone() : undefined;
+            const materials = Array.isArray(child.material) ? child.material : [child.material];
 
-            child.material = new THREE.MeshBasicMaterial({
-              map: baseColorTexture || undefined,
-              color: baseColor || new THREE.Color(0xffffff),
+            materials.forEach((material) => {
+              if (!material) return;
+
+              ['map', 'emissiveMap'].forEach((key) => {
+                if (!material[key]) return;
+                material[key].colorSpace = THREE.SRGBColorSpace;
+              });
+
+              material.needsUpdate = true;
             });
 
-            if (child.material.map) {
-              child.material.map.encoding = THREE.sRGBEncoding;
-            }
+            child.material = Array.isArray(child.material) ? materials : materials[0];
           });
 
           const box = new THREE.Box3().setFromObject(model);
@@ -273,7 +275,11 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
                 antialias: true,
               });
 
-              this.renderer.outputEncoding = THREE.sRGBEncoding;
+              if ('outputColorSpace' in this.renderer) {
+                this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+              } else {
+                this.renderer.outputEncoding = THREE.sRGBEncoding;
+              }
               this.renderer.autoClear = false;
             },
             render(gl, args) {
