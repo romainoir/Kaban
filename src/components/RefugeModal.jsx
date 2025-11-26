@@ -172,6 +172,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       const bounds = new maplibregl.LngLatBounds();
       const features = Array.isArray(refuges) ? refuges : [];
 
+      bounds.extend(selectedLocation);
+
       features.forEach((feature) => {
         const position = feature.geometry?.coordinates;
         if (!position || position.length < 2) return;
@@ -192,11 +194,18 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         bounds.extend(position);
       });
 
-        if (!bounds.isEmpty()) {
-          mapInstance.fitBounds(bounds, { padding: 60, maxZoom: 13 });
-        } else {
-          mapInstance.setCenter(coords);
-          mapInstance.setZoom(11);
+      if (!bounds.isEmpty()) {
+        mapInstance.fitBounds(bounds, { padding: 60, maxZoom: 13 });
+        mapInstance.once('idle', () => {
+          mapInstance.easeTo({
+            center: selectedLocation,
+            zoom: Math.max(mapInstance.getZoom(), 13),
+            duration: 500,
+          });
+        });
+      } else {
+        mapInstance.setCenter(coords);
+        mapInstance.setZoom(11);
       }
 
       mapInstance.on('remove', stopOrbit);
