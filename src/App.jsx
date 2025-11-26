@@ -851,6 +851,7 @@ function App() {
 
       <RefugeModal
         refuge={selectedRefuge}
+        refuges={refugesAfterMap}
         onClose={() => setSelectedRefuge(null)}
         isStarred={selectedRefuge ? starredRefuges.includes(selectedRefuge.properties.id) : false}
         onToggleStar={() => selectedRefuge && toggleStar(selectedRefuge.properties.id)}
