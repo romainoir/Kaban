@@ -331,6 +331,79 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           // Reduced scale from 60 to 30
           model.scale.setScalar((30 * 5) / maxDimension);
 
+          const analyzeTerrain = () => {
+            const center = selectedLocation;
+            const offset = 0.001; // ~100m
+
+            // 1. Calculate Slope / Orientation
+            // We need to handle cases where elevation is not yet available
+            const getElev = (lng, lat) => mapInstance.queryTerrainElevation(new maplibregl.LngLat(lng, lat)) || 0;
+
+            const eC = getElev(center.lng, center.lat);
+            const eN = getElev(center.lng, center.lat + offset);
+            const eS = getElev(center.lng, center.lat - offset);
+            const eE = getElev(center.lng + offset, center.lat);
+            const eW = getElev(center.lng - offset, center.lat);
+
+            // If elevation data is missing (0), we might get wrong results, but it's a fallback
+            if (eN === 0 && eS === 0 && eE === 0 && eW === 0) {
+              return { rotation: 0, pitch: 60, zoom: 15, offsetY: 150 };
+            }
+
+            const dz_dy = eN - eS; // North - South
+            const dz_dx = eE - eW; // East - West
+
+            // Downhill direction (angle from East, CCW)
+            const downhillAngle = Math.atan2(-dz_dy, -dz_dx);
+
+            // Model rotation: Assuming model front is +Z (North in our aligned space)
+            // East (0) -> Rotate -90 (-PI/2)
+            // North (PI/2) -> Rotate 0
+            const rotation = downhillAngle - Math.PI / 2;
+
+            // 2. Analyze Surroundings for Camera Safety
+            const checkRadius = 0.005; // ~400-500m
+            const samples = 12;
+            let maxElevDiff = -Infinity;
+
+            for (let i = 0; i < samples; i++) {
+              const theta = (i / samples) * Math.PI * 2;
+              const lng = center.lng + checkRadius * Math.cos(theta);
+              const lat = center.lat + checkRadius * Math.sin(theta);
+              const elev = getElev(lng, lat);
+              if (elev !== null) {
+                const diff = elev - eC;
+                if (diff > maxElevDiff) maxElevDiff = diff;
+              }
+            }
+
+            // Heuristics for Camera
+            let pitch = 60;
+            let zoom = 14.8; // Further away
+            let offsetY = 150;
+
+            if (maxElevDiff > 150) {
+              // High walls around -> Look down, maybe zoom out more
+              pitch = 45;
+              offsetY = 80;
+            } else if (maxElevDiff > 50) {
+              pitch = 55;
+              offsetY = 120;
+            } else if (maxElevDiff < -50) {
+              // Peak -> Can look more horizontally
+              pitch = 70;
+              offsetY = 180;
+            }
+
+            return { rotation, pitch, zoom, offsetY };
+          };
+
+          // Wait a bit for terrain to potentially load if it hasn't
+          // But we are in an async flow, so we can just try.
+          const { rotation, pitch, zoom, offsetY } = analyzeTerrain();
+
+          model.rotation.y = rotation;
+
           const customLayer = {
             id: 'refuge-3d-model',
             type: 'custom',
@@ -392,10 +465,10 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           mapInstance.easeTo({
             center: selectedLocation,
-            pitch: 60,
-            zoom: 15.5,
-            duration: 800,
-            offset: [0, 150] // Offset refuge to lower part of screen
+            pitch: pitch,
+            zoom: zoom,
+            duration: 1000,
+            offset: [0, offsetY]
           });
 
           startOrbit();
