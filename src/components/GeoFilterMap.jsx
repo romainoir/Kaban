@@ -566,6 +566,25 @@ const GeoFilterMap = ({
 
   useEffect(() => {
     if (!mapReady) return;
+
+    const map = mapRef.current;
+    if (!map) return;
+
+    const enforcePersistentLayers = () => {
+      ensureHillshadeLayer(map);
+      ensureOverlayLayers(map);
+    };
+
+    enforcePersistentLayers();
+    map.on('styledata', enforcePersistentLayers);
+
+    return () => {
+      map.off('styledata', enforcePersistentLayers);
+    };
+  }, [mapReady, overlayVisibility]);
+
+  useEffect(() => {
+    if (!mapReady) return;
     const map = mapRef.current;
     if (!map) return;
 
