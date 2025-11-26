@@ -69,6 +69,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
   const orbitPathRef = useRef([]);
   const orbitStartRef = useRef(0);
   const orbitTargetRef = useRef(null);
+  const orbitProgressRef = useRef(0);
 
   const hasWater = details?.water && !details.water.toLowerCase().includes('non');
   const hasWood = details?.wood && !details.wood.toLowerCase().includes('non');
@@ -152,60 +153,63 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       }
     };
 
-      const orbit = (ts) => {
-        if (!mapInstance) return;
+    const ORBIT_DURATION = 30000; // 30s full orbit
 
-        const path = orbitPathRef.current;
-        const target = orbitTargetRef.current;
+    const orbit = (ts) => {
+      if (!mapInstance) return;
 
-        if (path?.length && target) {
-          const timestamp = ts ?? performance.now();
-          if (!orbitStartRef.current) {
-            orbitStartRef.current = timestamp;
-          }
+      const path = orbitPathRef.current;
+      const target = orbitTargetRef.current;
 
-          const duration = 30000; // 30s full orbit
-          const progress = ((timestamp - orbitStartRef.current) % duration) / duration;
-          const scaled = progress * path.length;
-          const idx = Math.floor(scaled) % path.length;
-          const nextIdx = (idx + 1) % path.length;
-          const t = scaled - Math.floor(scaled);
-
-          const from = path[idx];
-          const to = path[nextIdx];
-
-          const interpolateCoord = (a, b, factor) => ({
-            lng: a.lng + (b.lng - a.lng) * factor,
-            lat: a.lat + (b.lat - a.lat) * factor,
-            altitude: a.altitude + (b.altitude - a.altitude) * factor,
-          });
-
-          const cameraPosition = interpolateCoord(from, to, t);
-          const cameraOptions = mapInstance.calculateCameraOptionsFromTo(
-            cameraPosition,
-            cameraPosition.altitude,
-            target,
-            target.altitude
-          );
-
-          if (cameraOptions) {
-            mapInstance.jumpTo(cameraOptions);
-          }
-        } else {
-          const newBearing = (mapInstance.getBearing() + 0.15) % 360;
-          mapInstance.rotateTo(newBearing, {
-            duration: 0,
-            animate: false,
-            around: selectedLocation || mapInstance.getCenter(),
-          });
+      if (path?.length && target) {
+        const timestamp = ts ?? performance.now();
+        if (!orbitStartRef.current) {
+          orbitStartRef.current = timestamp;
         }
 
-        animationFrame = requestAnimationFrame(orbit);
-      };
+        const progress = ((timestamp - orbitStartRef.current) % ORBIT_DURATION) / ORBIT_DURATION;
+        orbitProgressRef.current = progress;
+        const scaled = progress * path.length;
+        const idx = Math.floor(scaled) % path.length;
+        const nextIdx = (idx + 1) % path.length;
+        const t = scaled - Math.floor(scaled);
+
+        const from = path[idx];
+        const to = path[nextIdx];
+
+        const interpolateCoord = (a, b, factor) => ({
+          lng: a.lng + (b.lng - a.lng) * factor,
+          lat: a.lat + (b.lat - a.lat) * factor,
+          altitude: a.altitude + (b.altitude - a.altitude) * factor,
+        });
+
+        const cameraPosition = interpolateCoord(from, to, t);
+        const cameraOptions = mapInstance.calculateCameraOptionsFromTo(
+          cameraPosition,
+          cameraPosition.altitude,
+          target,
+          target.altitude
+        );
+
+        if (cameraOptions) {
+          mapInstance.jumpTo(cameraOptions);
+        }
+      } else {
+        const newBearing = (mapInstance.getBearing() + 0.15) % 360;
+        mapInstance.rotateTo(newBearing, {
+          duration: 0,
+          animate: false,
+          around: selectedLocation || mapInstance.getCenter(),
+        });
+      }
+
+      animationFrame = requestAnimationFrame(orbit);
+    };
 
     const startOrbit = () => {
       stopOrbit();
-      orbitStartRef.current = 0;
+      const now = performance.now();
+      orbitStartRef.current = now - orbitProgressRef.current * ORBIT_DURATION;
       animationFrame = requestAnimationFrame(orbit);
     };
 
@@ -454,7 +458,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             orbitTargetRef.current = {
               lng: locationCenter.lng,
               lat: locationCenter.lat,
-              altitude: centerElevation + 5,
+              altitude: centerElevation + 15,
             };
 
             const radiusMeters = 800;
@@ -477,13 +481,16 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               centerElevation
             );
 
-            const clearance = Math.max(40, maxElevation - centerElevation + 60);
+            const clearance = Math.max(120, maxElevation - centerElevation + 120);
 
             orbitPathRef.current = ringSamples.map((sample) => ({
               lng: sample.lng,
               lat: sample.lat,
               altitude: (sample.elevation ?? centerElevation) + clearance,
             }));
+
+            orbitProgressRef.current = 0;
+            orbitStartRef.current = 0;
           };
 
           buildOrbitPath();
@@ -587,6 +594,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       orbitPathRef.current = [];
       orbitTargetRef.current = null;
       orbitStartRef.current = 0;
+      orbitProgressRef.current = 0;
       expandedMapInstanceRef.current = null;
     };
   }, [mapExpanded, refuge, refuges, overlayVisibilityDefaults]);
