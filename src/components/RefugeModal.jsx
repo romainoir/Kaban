@@ -192,11 +192,11 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         bounds.extend(position);
       });
 
-      if (!bounds.isEmpty()) {
-        mapInstance.fitBounds(bounds, { padding: 60, maxZoom: 12 });
-      } else {
-        mapInstance.setCenter(coords);
-        mapInstance.setZoom(11);
+        if (!bounds.isEmpty()) {
+          mapInstance.fitBounds(bounds, { padding: 60, maxZoom: 13 });
+        } else {
+          mapInstance.setCenter(coords);
+          mapInstance.setZoom(11);
       }
 
       mapInstance.on('remove', stopOrbit);
@@ -227,6 +227,23 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             return;
           }
 
+          model.traverse((child) => {
+            if (!child.isMesh) return;
+
+            const originalMaterial = child.material;
+            const baseColorTexture = originalMaterial?.map || originalMaterial?.emissiveMap || null;
+            const baseColor = originalMaterial?.color ? originalMaterial.color.clone() : undefined;
+
+            child.material = new THREE.MeshBasicMaterial({
+              map: baseColorTexture || undefined,
+              color: baseColor || new THREE.Color(0xffffff),
+            });
+
+            if (child.material.map) {
+              child.material.map.encoding = THREE.sRGBEncoding;
+            }
+          });
+
           const box = new THREE.Box3().setFromObject(model);
           const center = box.getCenter(new THREE.Vector3());
           const maxDimension = Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z, 1);
@@ -256,6 +273,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
                 antialias: true,
               });
 
+              this.renderer.outputEncoding = THREE.sRGBEncoding;
               this.renderer.autoClear = false;
             },
             render(gl, args) {
@@ -288,7 +306,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           mapInstance.addLayer(customLayer);
 
-          mapInstance.easeTo({ center: selectedLocation, pitch: 70, zoom: 14, duration: 800 });
+          mapInstance.easeTo({ center: selectedLocation, pitch: 70, zoom: 16, duration: 800 });
 
           startOrbit();
           resetIdleTimer();
