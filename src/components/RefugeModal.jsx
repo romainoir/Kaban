@@ -351,14 +351,14 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           });
 
           const box = new THREE.Box3().setFromObject(model);
-          const center = box.getCenter(new THREE.Vector3());
+          const modelCenter = box.getCenter(new THREE.Vector3());
           const size = new THREE.Vector3();
           box.getSize(size);
           const maxDimension = Math.max(size.x, size.y, size.z, 1);
 
-          model.position.x -= center.x;
+          model.position.x -= modelCenter.x;
           model.position.y -= box.min.y; // Align bottom to ground
-          model.position.z -= center.z;
+          model.position.z -= modelCenter.z;
 
           // Reduced scale from 60 to 30
           model.scale.setScalar((30 * 5) / maxDimension);
@@ -444,8 +444,9 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           const buildOrbitPath = () => {
             const centerElevation = mapInstance.queryTerrainElevation(selectedLocation) || 0;
+            const locationCenter = selectedLocation;
             const target = maplibregl.MercatorCoordinate.fromLngLat(
-              selectedLocation,
+              locationCenter,
               centerElevation + 5
             );
 
@@ -457,9 +458,9 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
             for (let i = 0; i < samples; i++) {
               const theta = (i / samples) * Math.PI * 2;
-              const { deltaLng, deltaLat } = metersToDegrees(radiusMeters, center.lat, theta);
-              const lng = center.lng + deltaLng;
-              const lat = center.lat + deltaLat;
+              const { deltaLng, deltaLat } = metersToDegrees(radiusMeters, locationCenter.lat, theta);
+              const lng = locationCenter.lng + deltaLng;
+              const lat = locationCenter.lat + deltaLat;
               const elevation =
                 mapInstance.queryTerrainElevation(new maplibregl.LngLat(lng, lat)) ?? centerElevation;
 
