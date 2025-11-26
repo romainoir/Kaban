@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, MapPin, Droplets, Flame, Bed, ExternalLink, TreePine, Tent, MessageSquare, ChevronLeft, ChevronRight, Star, Heart, Ban } from 'lucide-react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { createRefugeMarker } from './GeoFilterMap';
 
 const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, isLiked, onToggleLike, isDisliked, onToggleDislike }) => {
   if (!refuge) return null;
@@ -86,9 +87,15 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       if (!position || position.length < 2) return;
       const isSelected = feature.properties?.id === refuge.properties?.id;
 
-      new maplibregl.Marker({ color: isSelected ? '#f97316' : '#38bdf8' })
-        .setLngLat(position)
-        .addTo(map);
+      const marker = createRefugeMarker(
+        feature,
+        map,
+        undefined,
+        { compact: true },
+        { isSelected }
+      );
+
+      marker.addTo(map);
 
       bounds.extend(position);
     });
