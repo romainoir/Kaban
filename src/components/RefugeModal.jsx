@@ -5,6 +5,45 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { createRefugeMarker } from './GeoFilterMap';
 
+const threeScriptUrl = 'https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.min.js';
+const gltfLoaderScriptUrl = 'https://cdn.jsdelivr.net/npm/three@0.169.0/examples/js/loaders/GLTFLoader.js';
+
+const loadExternalScript = (url) =>
+  new Promise((resolve, reject) => {
+    const existingScript = document.querySelector(`script[src="${url}"]`);
+    if (existingScript) {
+      if (existingScript.dataset.loaded === 'true') {
+        resolve();
+      } else {
+        existingScript.addEventListener('load', () => resolve());
+        existingScript.addEventListener('error', reject);
+      }
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = url;
+    script.async = true;
+    script.onload = () => {
+      script.dataset.loaded = 'true';
+      resolve();
+    };
+    script.onerror = reject;
+    document.body.appendChild(script);
+  });
+
+const loadThreeStack = async () => {
+  if (window.THREE?.GLTFLoader) return window.THREE;
+  if (window.THREE && !window.THREE.GLTFLoader) {
+    await loadExternalScript(gltfLoaderScriptUrl);
+    return window.THREE;
+  }
+
+  await loadExternalScript(threeScriptUrl);
+  await loadExternalScript(gltfLoaderScriptUrl);
+  return window.THREE;
+};
+
 const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, isLiked, onToggleLike, isDisliked, onToggleDislike, massif }) => {
   if (!refuge) return null;
 
@@ -72,44 +111,167 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
   useEffect(() => {
     if (!mapExpanded || !expandedMapRef.current) return undefined;
 
-    const coords = refuge.geometry?.coordinates || [6.4, 45.2];
-    const map = new maplibregl.Map({
-      container: expandedMapRef.current,
-      style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
-      center: coords,
-      zoom: 8,
-      attributionControl: true,
-    });
+    let animationFrame;
+    let mapInstance;
 
-    const bounds = new maplibregl.LngLatBounds();
-    const features = Array.isArray(refuges) ? refuges : [];
+    const setupExpandedMap = async () => {
+      const coords = refuge.geometry?.coordinates || [6.4, 45.2];
+      const selectedLocation = new maplibregl.LngLat(coords[0], coords[1]);
 
-    features.forEach((feature) => {
-      const position = feature.geometry?.coordinates;
-      if (!position || position.length < 2) return;
-      const isSelected = feature.properties?.id === refuge.properties?.id;
+      mapInstance = new maplibregl.Map({
+        container: expandedMapRef.current,
+        style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
+        center: coords,
+        zoom: 9,
+        pitch: 55,
+        bearing: -15,
+        attributionControl: true,
+      });
 
-      const marker = createRefugeMarker(
-        feature,
-        map,
-        undefined,
-        { compact: true },
-        { isSelected }
-      );
+      const bounds = new maplibregl.LngLatBounds();
+      const features = Array.isArray(refuges) ? refuges : [];
 
-      marker.addTo(map);
+      features.forEach((feature) => {
+        const position = feature.geometry?.coordinates;
+        if (!position || position.length < 2) return;
+        const isSelected = feature.properties?.id === refuge.properties?.id;
 
-      bounds.extend(position);
-    });
+        if (!isSelected) {
+          const marker = createRefugeMarker(
+            feature,
+            mapInstance,
+            undefined,
+            { compact: true },
+            { isSelected }
+          );
 
-    if (!bounds.isEmpty()) {
-      map.fitBounds(bounds, { padding: 50, maxZoom: 12 });
-    } else {
-      map.setCenter(coords);
-      map.setZoom(10);
-    }
+          marker.addTo(mapInstance);
+        }
 
-    return () => map.remove();
+        bounds.extend(position);
+      });
+
+      if (!bounds.isEmpty()) {
+        mapInstance.fitBounds(bounds, { padding: 60, maxZoom: 12 });
+      } else {
+        mapInstance.setCenter(coords);
+        mapInstance.setZoom(11);
+      }
+
+      const stopOrbit = () => {
+        if (animationFrame) {
+          cancelAnimationFrame(animationFrame);
+          animationFrame = null;
+        }
+      };
+
+      mapInstance.on('remove', stopOrbit);
+
+      mapInstance.on('load', async () => {
+        if (!mapInstance.getSource('modal-terrain-dem')) {
+          mapInstance.addSource('modal-terrain-dem', {
+            type: 'raster-dem',
+            url: 'https://tiles.mapterhorn.com/tilejson.json',
+            tileSize: 256,
+          });
+
+          mapInstance.setTerrain({ source: 'modal-terrain-dem', exaggeration: 1.3 });
+
+          if (!mapInstance.getLayer('modal-sky')) {
+            mapInstance.addLayer({
+              id: 'modal-sky',
+              type: 'sky',
+              paint: {
+                'sky-type': 'atmosphere',
+                'sky-atmosphere-sun-intensity': 12,
+              },
+            });
+          }
+        }
+
+        try {
+          const THREE = await loadThreeStack();
+          const loader = new THREE.GLTFLoader();
+          const gltf = await loader.loadAsync('/refuge_LP.glb');
+          const model = gltf.scene;
+          model.scale.setScalar(0.7);
+
+          const customLayer = {
+            id: 'refuge-3d-model',
+            type: 'custom',
+            renderingMode: '3d',
+            onAdd(map, gl) {
+              this.camera = new THREE.Camera();
+              this.scene = new THREE.Scene();
+              this.scene.rotateX(Math.PI / 2);
+              this.scene.scale.multiply(new THREE.Vector3(1, 1, -1));
+
+              const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+              const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+              sun.position.set(80, 120, -60).normalize();
+              this.scene.add(ambient);
+              this.scene.add(sun);
+
+              this.model = model;
+              this.scene.add(this.model);
+
+              this.renderer = new THREE.WebGLRenderer({
+                canvas: map.getCanvas(),
+                context: gl,
+                antialias: true,
+              });
+
+              this.renderer.autoClear = false;
+            },
+            render(gl, args) {
+              if (!this.model) return;
+
+              const elevation = mapInstance.queryTerrainElevation(selectedLocation) || 0;
+              const mercatorCoord = maplibregl.MercatorCoordinate.fromLngLat(
+                selectedLocation,
+                elevation
+              );
+
+              const modelTransform = {
+                translateX: mercatorCoord.x,
+                translateY: mercatorCoord.y,
+                translateZ: mercatorCoord.z,
+                scale: mercatorCoord.meterInMercatorCoordinateUnits(),
+              };
+
+              const m = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix);
+              const l = new THREE.Matrix4()
+                .makeTranslation(modelTransform.translateX, modelTransform.translateY, modelTransform.translateZ)
+                .scale(new THREE.Vector3(modelTransform.scale, -modelTransform.scale, modelTransform.scale));
+
+              this.camera.projectionMatrix = m.multiply(l);
+              this.renderer.resetState();
+              this.renderer.render(this.scene, this.camera);
+              mapInstance.triggerRepaint();
+            },
+          };
+
+          mapInstance.addLayer(customLayer);
+
+          const orbit = () => {
+            mapInstance.setBearing((mapInstance.getBearing() + 0.06) % 360);
+            animationFrame = requestAnimationFrame(orbit);
+          };
+
+          mapInstance.easeTo({ center: selectedLocation, pitch: 60, duration: 800 });
+          orbit();
+        } catch (error) {
+          console.error('Failed to load 3D model', error);
+        }
+      });
+    };
+
+    setupExpandedMap();
+
+    return () => {
+      if (animationFrame) cancelAnimationFrame(animationFrame);
+      if (mapInstance) mapInstance.remove();
+    };
   }, [mapExpanded, refuge, refuges]);
 
   return (
