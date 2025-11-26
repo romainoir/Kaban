@@ -3,6 +3,74 @@ import maplibregl from 'maplibre-gl';
 import { Maximize2 } from 'lucide-react';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
+const WMTS_PREVIEW_COORDS = { z: 12, x: 2072, y: 1475 };
+const IGN_ATTRIBUTION = '© IGN / Geoportail';
+
+function createIgnTileTemplate(layerName, format = 'image/png') {
+  const encodedFormat = encodeURIComponent(format);
+  const encodedLayer = encodeURIComponent(layerName);
+  return `https://data.geopf.fr/wmts?SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile&LAYER=${encodedLayer}&STYLE=normal&FORMAT=${encodedFormat}&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}`;
+}
+
+function createTilePreviewUrl(template, coords = WMTS_PREVIEW_COORDS) {
+  if (typeof template !== 'string' || !template.length) {
+    return null;
+  }
+  const replacements = [
+    { token: /\{z\}/gi, value: coords?.z ?? WMTS_PREVIEW_COORDS.z },
+    { token: /\{x\}/gi, value: coords?.x ?? WMTS_PREVIEW_COORDS.x },
+    { token: /\{y\}/gi, value: coords?.y ?? WMTS_PREVIEW_COORDS.y }
+  ];
+  return replacements.reduce((acc, entry) => acc.replace(entry.token, entry.value), template);
+}
+
+const OVERLAY_LAYERS = [
+  {
+    id: 'ign-orthophotos',
+    label: 'Sat view — Orthophoto',
+    sourceId: 'ign-orthophotos',
+    layerId: 'ign-orthophotos',
+    tileTemplate: createIgnTileTemplate('ORTHOIMAGERY.ORTHOPHOTOS.BDORTHO', 'image/jpeg'),
+    tileSize: 256,
+    attribution: IGN_ATTRIBUTION,
+    defaultVisible: false,
+    defaultOpacity: 0.6,
+  },
+  {
+    id: 'ign-forest-inventory',
+    label: 'Forest view — BD Forêt',
+    sourceId: 'ign-forest-inventory',
+    layerId: 'ign-forest-inventory',
+    tileTemplate: createIgnTileTemplate('LANDCOVER.FORESTINVENTORY.V2', 'image/png'),
+    tileSize: 256,
+    attribution: IGN_ATTRIBUTION,
+    defaultVisible: false,
+    defaultOpacity: 0.5,
+  },
+  {
+    id: 'ign-opentopo',
+    label: 'OpenTopo',
+    sourceId: 'ign-opentopo',
+    layerId: 'ign-opentopo',
+    tileTemplate: createIgnTileTemplate('GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN25TOPO', 'image/jpeg'),
+    tileSize: 256,
+    attribution: IGN_ATTRIBUTION,
+    defaultVisible: false,
+    defaultOpacity: 0.8,
+  },
+  {
+    id: 'ign-cosia',
+    label: 'AI ground — COSIA 2021-2023',
+    sourceId: 'ign-cosia',
+    layerId: 'ign-cosia',
+    tileTemplate: createIgnTileTemplate('IGNF_COSIA_2021-2023', 'image/png'),
+    tileSize: 256,
+    attribution: IGN_ATTRIBUTION,
+    defaultVisible: true,
+    defaultOpacity: 0.35,
+  },
+];
+
 const GeoFilterMap = ({
   refuges,
   onBoundsChange,
@@ -37,6 +105,17 @@ const GeoFilterMap = ({
   const userMovedRef = useRef(false);
   const hoveredMarkerRef = useRef(null);
   const hoveredIdRef = useRef(null);
+  const [overlayVisibility, setOverlayVisibility] = useState(() =>
+    OVERLAY_LAYERS.reduce((acc, layer) => {
+      acc[layer.id] = !!layer.defaultVisible;
+      return acc;
+    }, {})
+  );
+
+  const layerPreviews = useMemo(
+    () => Object.fromEntries(OVERLAY_LAYERS.map((layer) => [layer.id, createTilePreviewUrl(layer.tileTemplate)])),
+    []
+  );
 
   // --- Hover Logic ---
   const hoverPreviewRef = useRef(null);
@@ -331,6 +410,41 @@ const GeoFilterMap = ({
 
   useEffect(() => {
     if (!mapReady) return;
+    const map = mapRef.current;
+    if (!map) return;
+
+    OVERLAY_LAYERS.forEach((layer) => {
+      if (!map.getSource(layer.sourceId)) {
+        map.addSource(layer.sourceId, {
+          type: 'raster',
+          tiles: [layer.tileTemplate],
+          tileSize: layer.tileSize || 256,
+          attribution: layer.attribution,
+        });
+      }
+
+      if (!map.getLayer(layer.layerId)) {
+        map.addLayer(
+          {
+            id: layer.layerId,
+            type: 'raster',
+            source: layer.sourceId,
+            paint: { 'raster-opacity': layer.defaultOpacity ?? 1 },
+          },
+          'ml-refuges-clusters'
+        );
+      }
+
+      map.setLayoutProperty(layer.layerId, 'visibility', overlayVisibility[layer.id] ? 'visible' : 'none');
+    });
+  }, [mapReady, overlayVisibility]);
+
+  const toggleOverlayLayer = (layerId) => {
+    setOverlayVisibility((prev) => ({ ...prev, [layerId]: !prev[layerId] }));
+  };
+
+  useEffect(() => {
+    if (!mapReady) return;
 
     if (hoveredMarkerRef.current?.getElement) {
       hoveredMarkerRef.current.getElement().classList.remove('hovered');
@@ -487,6 +601,30 @@ const GeoFilterMap = ({
           className="maplibre-container"
           style={{ height: compact ? '200px' : '100%', width: '100%', flex: compact ? 'none' : 1, minHeight: compact ? 'auto' : '360px' }}
         />
+        <div className={`map-layer-menu ${compact ? 'compact' : ''}`} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+          <div className="map-layer-menu-title">Fonds supplémentaires</div>
+          <div className="map-layer-menu-list">
+            {OVERLAY_LAYERS.map((layer) => (
+              <label key={layer.id} className="map-layer-toggle">
+                <input
+                  type="checkbox"
+                  checked={!!overlayVisibility[layer.id]}
+                  onChange={() => toggleOverlayLayer(layer.id)}
+                />
+                <div className="map-layer-toggle-info">
+                  <span className="map-layer-name">{layer.label}</span>
+                  {layerPreviews[layer.id] && (
+                    <span
+                      className="map-layer-preview"
+                      style={{ backgroundImage: `url(${layerPreviews[layer.id]})` }}
+                      aria-hidden="true"
+                    />
+                  )}
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
         <div id="hoverPreview" ref={hoverPreviewRef}></div>
       </div>
     </div>
