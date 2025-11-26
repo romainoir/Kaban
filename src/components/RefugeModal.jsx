@@ -5,43 +5,25 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { createRefugeMarker } from './GeoFilterMap';
 
-const threeScriptUrl = 'https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.min.js';
-const gltfLoaderScriptUrl = 'https://cdn.jsdelivr.net/npm/three@0.169.0/examples/js/loaders/GLTFLoader.js';
+let threeStackPromise;
+const loadThreeStack = async () => {
+  if (threeStackPromise) return threeStackPromise;
 
-const loadExternalScript = (url) =>
-  new Promise((resolve, reject) => {
-    const existingScript = document.querySelector(`script[src="${url}"]`);
-    if (existingScript) {
-      if (existingScript.dataset.loaded === 'true') {
-        resolve();
-      } else {
-        existingScript.addEventListener('load', () => resolve());
-        existingScript.addEventListener('error', reject);
-      }
-      return;
+  threeStackPromise = (async () => {
+    if (window.THREE?.GLTFLoader) {
+      return { THREE: window.THREE, GLTFLoader: window.THREE.GLTFLoader, isFallback: false };
     }
 
-    const script = document.createElement('script');
-    script.src = url;
-    script.async = true;
-    script.onload = () => {
-      script.dataset.loaded = 'true';
-      resolve();
-    };
-    script.onerror = reject;
-    document.body.appendChild(script);
-  });
+    try {
+      const [{ default: THREE, GLTFLoader }] = await Promise.all([import('../utils/threeFallback.js')]);
+      return { THREE, GLTFLoader, isFallback: true };
+    } catch (error) {
+      console.error('Unable to load Three.js stack', error);
+      return { THREE: null, GLTFLoader: null, isFallback: true };
+    }
+  })();
 
-const loadThreeStack = async () => {
-  if (window.THREE?.GLTFLoader) return window.THREE;
-  if (window.THREE && !window.THREE.GLTFLoader) {
-    await loadExternalScript(gltfLoaderScriptUrl);
-    return window.THREE;
-  }
-
-  await loadExternalScript(threeScriptUrl);
-  await loadExternalScript(gltfLoaderScriptUrl);
-  return window.THREE;
+  return threeStackPromise;
 };
 
 const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, isLiked, onToggleLike, isDisliked, onToggleDislike, massif }) => {
@@ -179,10 +161,17 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         }
 
         try {
-          const THREE = await loadThreeStack();
-          const loader = new THREE.GLTFLoader();
-          const gltf = await loader.loadAsync('/refuge_LP.glb');
-          const model = gltf.scene;
+          const { THREE, GLTFLoader } = await loadThreeStack();
+          if (!THREE || !GLTFLoader) return;
+          const loader = new GLTFLoader();
+          const modelUrl = new URL('/refuge_LP.glb', import.meta.env.BASE_URL).href;
+          const gltf = await loader.loadAsync(modelUrl);
+          const model = gltf?.scene;
+
+          if (!model) {
+            return;
+          }
+
           model.scale.setScalar(0.7);
 
           const customLayer = {
