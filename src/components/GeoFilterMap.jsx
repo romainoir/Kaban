@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
-import { Maximize2 } from 'lucide-react';
+import { Layers } from 'lucide-react';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const WMTS_PREVIEW_COORDS = { z: 12, x: 2072, y: 1475 };
@@ -27,7 +27,7 @@ function createTilePreviewUrl(template, coords = WMTS_PREVIEW_COORDS) {
 const OVERLAY_LAYERS = [
   {
     id: 'ign-orthophotos',
-    label: 'Sat view — Orthophoto',
+    label: 'Satellite',
     sourceId: 'ign-orthophotos',
     layerId: 'ign-orthophotos',
     tileTemplate: createIgnTileTemplate('ORTHOIMAGERY.ORTHOPHOTOS.BDORTHO', 'image/jpeg'),
@@ -38,7 +38,7 @@ const OVERLAY_LAYERS = [
   },
   {
     id: 'ign-forest-inventory',
-    label: 'Forest view — BD Forêt',
+    label: 'Forêt',
     sourceId: 'ign-forest-inventory',
     layerId: 'ign-forest-inventory',
     tileTemplate: createIgnTileTemplate('LANDCOVER.FORESTINVENTORY.V2', 'image/png'),
@@ -60,13 +60,14 @@ const OVERLAY_LAYERS = [
   },
   {
     id: 'ign-cosia',
-    label: 'AI ground — COSIA 2021-2023',
+    label: 'AI Ground — COSIA 2021-2023',
     sourceId: 'ign-cosia',
     layerId: 'ign-cosia',
     tileTemplate: createIgnTileTemplate('IGNF_COSIA_2021-2023', 'image/png'),
     tileSize: 256,
     attribution: IGN_ATTRIBUTION,
     defaultVisible: true,
+    alwaysOn: true,
     defaultOpacity: 0.35,
   },
 ];
@@ -107,10 +108,13 @@ const GeoFilterMap = ({
   const hoveredIdRef = useRef(null);
   const [overlayVisibility, setOverlayVisibility] = useState(() =>
     OVERLAY_LAYERS.reduce((acc, layer) => {
-      acc[layer.id] = !!layer.defaultVisible;
+      if (!layer.alwaysOn) {
+        acc[layer.id] = !!layer.defaultVisible;
+      }
       return acc;
     }, {})
   );
+  const [showLayerMenu, setShowLayerMenu] = useState(false);
 
   const layerPreviews = useMemo(
     () => Object.fromEntries(OVERLAY_LAYERS.map((layer) => [layer.id, createTilePreviewUrl(layer.tileTemplate)])),
@@ -187,7 +191,7 @@ const GeoFilterMap = ({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
+      style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json',
       center: initialView?.center || [6.4, 45.2],
       zoom: initialView?.zoom ?? (compact ? 5.5 : 6),
       pitch: 0,
@@ -424,6 +428,7 @@ const GeoFilterMap = ({
       }
 
       if (!map.getLayer(layer.layerId)) {
+        const firstLayerId = map.getStyle()?.layers?.[0]?.id;
         map.addLayer(
           {
             id: layer.layerId,
@@ -431,15 +436,18 @@ const GeoFilterMap = ({
             source: layer.sourceId,
             paint: { 'raster-opacity': layer.defaultOpacity ?? 1 },
           },
-          'ml-refuges-clusters'
+          firstLayerId || 'ml-refuges-clusters'
         );
       }
 
-      map.setLayoutProperty(layer.layerId, 'visibility', overlayVisibility[layer.id] ? 'visible' : 'none');
+      const isVisible = layer.alwaysOn || overlayVisibility[layer.id];
+      map.setLayoutProperty(layer.layerId, 'visibility', isVisible ? 'visible' : 'none');
     });
   }, [mapReady, overlayVisibility]);
 
   const toggleOverlayLayer = (layerId) => {
+    const layer = OVERLAY_LAYERS.find((l) => l.id === layerId);
+    if (layer?.alwaysOn) return;
     setOverlayVisibility((prev) => ({ ...prev, [layerId]: !prev[layerId] }));
   };
 
@@ -601,29 +609,41 @@ const GeoFilterMap = ({
           className="maplibre-container"
           style={{ height: compact ? '200px' : '100%', width: '100%', flex: compact ? 'none' : 1, minHeight: compact ? 'auto' : '360px' }}
         />
-        <div className={`map-layer-menu ${compact ? 'compact' : ''}`} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-          <div className="map-layer-menu-title">Fonds supplémentaires</div>
-          <div className="map-layer-menu-list">
-            {OVERLAY_LAYERS.map((layer) => (
-              <label key={layer.id} className="map-layer-toggle">
-                <input
-                  type="checkbox"
-                  checked={!!overlayVisibility[layer.id]}
-                  onChange={() => toggleOverlayLayer(layer.id)}
-                />
-                <div className="map-layer-toggle-info">
-                  <span className="map-layer-name">{layer.label}</span>
-                  {layerPreviews[layer.id] && (
-                    <span
-                      className="map-layer-preview"
-                      style={{ backgroundImage: `url(${layerPreviews[layer.id]})` }}
-                      aria-hidden="true"
+        <div className={`map-layer-controls ${compact ? 'compact' : ''}`} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+          <button
+            className="map-layer-toggle-button"
+            aria-label="Basculer le menu des fonds"
+            aria-expanded={showLayerMenu}
+            onClick={() => setShowLayerMenu((open) => !open)}
+          >
+            <Layers size={18} />
+          </button>
+          {showLayerMenu && (
+            <div className={`map-layer-menu ${compact ? 'compact' : ''}`}>
+              <div className="map-layer-menu-title">Fonds supplémentaires</div>
+              <div className="map-layer-menu-list">
+                {OVERLAY_LAYERS.filter((layer) => !layer.alwaysOn).map((layer) => (
+                  <label key={layer.id} className="map-layer-toggle">
+                    <input
+                      type="checkbox"
+                      checked={!!overlayVisibility[layer.id]}
+                      onChange={() => toggleOverlayLayer(layer.id)}
                     />
-                  )}
-                </div>
-              </label>
-            ))}
-          </div>
+                    <div className="map-layer-toggle-info">
+                      <span className="map-layer-name">{layer.label}</span>
+                      {layerPreviews[layer.id] && (
+                        <span
+                          className="map-layer-preview"
+                          style={{ backgroundImage: `url(${layerPreviews[layer.id]})` }}
+                          aria-hidden="true"
+                        />
+                      )}
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <div id="hoverPreview" ref={hoverPreviewRef}></div>
       </div>
