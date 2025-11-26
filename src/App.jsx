@@ -52,6 +52,7 @@ function App() {
   const [selectedRefuge, setSelectedRefuge] = useState(null);
   const [viewMode, setViewMode] = useState('grid');
   const [mapBounds, setMapBounds] = useState(null);
+  const lastValidMapBounds = useRef(null);
   const [useMapFilter, setUseMapFilter] = useState(true);
   const [filters, setFilters] = useState(createDefaultFilters);
   const [preferences, setPreferences] = useState({
@@ -312,15 +313,37 @@ function App() {
     });
   }, [refuges, filters, starredRefuges, likedRefuges]);
 
-  const refugesAfterMap = useMemo(() => {
-    if (!useMapFilter || !mapBounds) return refugesAfterFiltersNoMap;
+  const [cachedMapRefuges, setCachedMapRefuges] = useState([]);
+
+  const effectiveMapBounds = useMemo(() => mapBounds || lastValidMapBounds.current, [mapBounds]);
+
+  const mapFilteredRefuges = useMemo(() => {
+    if (!useMapFilter || !effectiveMapBounds) return null;
     return refugesAfterFiltersNoMap.filter((r) => {
       const coords = r.geometry?.coordinates;
       if (!coords || coords.length < 2) return false;
       const [lon, lat] = coords;
-      return lat >= mapBounds.south && lat <= mapBounds.north && lon >= mapBounds.west && lon <= mapBounds.east;
+      return (
+        lat >= effectiveMapBounds.south &&
+        lat <= effectiveMapBounds.north &&
+        lon >= effectiveMapBounds.west &&
+        lon <= effectiveMapBounds.east
+      );
     });
-  }, [refugesAfterFiltersNoMap, mapBounds, useMapFilter]);
+  }, [refugesAfterFiltersNoMap, effectiveMapBounds, useMapFilter]);
+
+  useEffect(() => {
+    if (useMapFilter && mapFilteredRefuges && mapFilteredRefuges.length > 0) {
+      setCachedMapRefuges(mapFilteredRefuges);
+    }
+  }, [mapFilteredRefuges, useMapFilter]);
+
+  const refugesAfterMap = useMemo(() => {
+    if (!useMapFilter) return refugesAfterFiltersNoMap;
+    if (mapFilteredRefuges && mapFilteredRefuges.length > 0) return mapFilteredRefuges;
+    if (cachedMapRefuges.length > 0) return cachedMapRefuges;
+    return mapFilteredRefuges || refugesAfterFiltersNoMap;
+  }, [useMapFilter, refugesAfterFiltersNoMap, mapFilteredRefuges, cachedMapRefuges]);
 
   // Sync useMapFilter from filters
   useEffect(() => {
@@ -372,11 +395,16 @@ function App() {
   };
 
   const handleBoundsChange = (bounds) => {
+    const values = [bounds?.north, bounds?.south, bounds?.east, bounds?.west];
+    if (values.some((v) => typeof v !== 'number' || !Number.isFinite(v))) return;
+
+    lastValidMapBounds.current = bounds;
     setMapBounds(bounds);
   };
 
   const clearMapFilter = () => {
     setMapBounds(null);
+    lastValidMapBounds.current = null;
     setUseMapFilter(false);
     setFilters(prev => ({ ...prev, useMapFilter: false }));
   };
