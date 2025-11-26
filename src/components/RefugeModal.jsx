@@ -320,10 +320,16 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           const box = new THREE.Box3().setFromObject(model);
           const center = box.getCenter(new THREE.Vector3());
-          const maxDimension = Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z, 1);
+          const size = new THREE.Vector3();
+          box.getSize(size);
+          const maxDimension = Math.max(size.x, size.y, size.z, 1);
 
-          model.position.sub(center);
-          model.scale.setScalar((60 * 5) / maxDimension);
+          model.position.x -= center.x;
+          model.position.y -= box.min.y; // Align bottom to ground
+          model.position.z -= center.z;
+
+          // Reduced scale from 60 to 30
+          model.scale.setScalar((30 * 5) / maxDimension);
 
           const customLayer = {
             id: 'refuge-3d-model',
@@ -384,7 +390,13 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           mapInstance.addLayer(customLayer);
 
-          mapInstance.easeTo({ center: selectedLocation, pitch: 70, zoom: 16, duration: 800 });
+          mapInstance.easeTo({
+            center: selectedLocation,
+            pitch: 60,
+            zoom: 15.5,
+            duration: 800,
+            offset: [0, 150] // Offset refuge to lower part of screen
+          });
 
           startOrbit();
           resetIdleTimer();
@@ -902,10 +914,10 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
                     alignItems: 'center',
                     justifyContent: 'center',
                     color: 'white',
-                  cursor: 'pointer',
-                  zIndex: 2,
-                }}
-              >
+                    cursor: 'pointer',
+                    zIndex: 2,
+                  }}
+                >
                   <X size={20} />
                 </button>
                 <div
