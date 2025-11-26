@@ -183,9 +183,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           const loader = new GLTFLoader();
           loader.setCrossOrigin('anonymous');
-          loader.setResourcePath('https://maplibre.org/maplibre-gl-js/docs/assets/34M_17/');
 
-          const modelUrl = 'https://maplibre.org/maplibre-gl-js/docs/assets/34M_17/34M_17.gltf';
+          const modelUrl = `${import.meta.env.BASE_URL}refuge_LP.glb`;
           const gltf = await loader.loadAsync(modelUrl);
           const model = gltf?.scene;
 
