@@ -127,6 +127,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     let animationFrame;
     let cameraTransitionFrame;
     let idleTimeout;
+    let orbitStartTimeout;
     let mapInstance;
     let selectedLocation;
     let analyzedTerrain;
@@ -350,6 +351,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       }
 
       mapInstance.on('remove', stopOrbit);
+
+      orbitStartTimeout = null;
 
       mapInstance.on('load', async () => {
         if (!mapInstance.getSource('modal-hillshade')) {
@@ -584,10 +587,14 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           });
 
           mapInstance.once('moveend', () => {
-            animateCameraTransition(targetCamera, 1400, () => {
-              startOrbit();
-              resetIdleTimer();
-            });
+            orbitStartTimeout = setTimeout(() => {
+              if (!mapInstance) return;
+
+              animateCameraTransition(targetCamera, 1400, () => {
+                startOrbit();
+                resetIdleTimer();
+              });
+            }, 1000);
           });
         } catch (error) {
           console.error('Failed to load 3D model', error);
@@ -601,6 +608,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       if (animationFrame) cancelAnimationFrame(animationFrame);
       if (cameraTransitionFrame) cancelAnimationFrame(cameraTransitionFrame);
       if (idleTimeout) clearTimeout(idleTimeout);
+      if (orbitStartTimeout) clearTimeout(orbitStartTimeout);
       if (mapInstance) {
         userInteractionEvents.forEach((eventName) => {
           mapInstance.off(eventName, handleUserInteraction);
