@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, MapPin, Droplets, Flame, Bed, ExternalLink, TreePine, Tent, MessageSquare, ChevronLeft, ChevronRight, Star, Heart, Ban } from 'lucide-react';
+import { X, MapPin, Droplets, Flame, Bed, ExternalLink, TreePine, Tent, MessageSquare, ChevronLeft, ChevronRight, Star, Heart, Ban, Layers } from 'lucide-react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { applyOverlayLayers, createRefugeMarker, OVERLAY_LAYERS } from './GeoFilterMap';
@@ -47,11 +47,6 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
   if (!refuge) return null;
 
   const { nom, coord, details, photos, remarks, places, lien, type, comments = [] } = refuge.properties;
-  const [lightboxIndex, setLightboxIndex] = useState(null);
-  const [mapExpanded, setMapExpanded] = useState(false);
-  const miniMapContainerRef = useRef(null);
-  const miniMapRef = useRef(null);
-  const expandedMapRef = useRef(null);
   const overlayVisibilityDefaults = useMemo(
     () =>
       OVERLAY_LAYERS.reduce((acc, layer) => {
@@ -62,6 +57,15 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       }, {}),
     []
   );
+  const [lightboxIndex, setLightboxIndex] = useState(null);
+  const [mapExpanded, setMapExpanded] = useState(false);
+  const [overlayVisibility, setOverlayVisibility] = useState(() => ({ ...overlayVisibilityDefaults }));
+  const [showLayerMenu, setShowLayerMenu] = useState(false);
+  const miniMapContainerRef = useRef(null);
+  const miniMapRef = useRef(null);
+  const expandedMapRef = useRef(null);
+  const expandedMapInstanceRef = useRef(null);
+  const overlayVisibilityRef = useRef(overlayVisibilityDefaults);
 
   const hasWater = details?.water && !details.water.toLowerCase().includes('non');
   const hasWood = details?.wood && !details.wood.toLowerCase().includes('non');
@@ -163,7 +167,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
     const resetIdleTimer = () => {
       if (idleTimeout) clearTimeout(idleTimeout);
-      idleTimeout = setTimeout(startOrbit, 30000);
+      idleTimeout = setTimeout(startOrbit, 5000);
     };
 
     const handleUserInteraction = (event) => {
@@ -180,11 +184,27 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         container: expandedMapRef.current,
         style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
         center: coords,
-        zoom: 9,
+        zoom: 14,
         pitch: 55,
         bearing: -15,
         attributionControl: true,
+        minZoom: 13,
+        maxZoom: 17,
+        dragPan: false,
+        dragRotate: false,
+        keyboard: false,
+        touchPitch: false,
+        pitchWithRotate: false,
+        boxZoom: false,
       });
+
+      expandedMapInstanceRef.current = mapInstance;
+
+      const lockBounds = new maplibregl.LngLatBounds(
+        [selectedLocation.lng - 0.0005, selectedLocation.lat - 0.0005],
+        [selectedLocation.lng + 0.0005, selectedLocation.lat + 0.0005]
+      );
+      mapInstance.setMaxBounds(lockBounds);
 
       userInteractionEvents.forEach((eventName) => {
         mapInstance.on(eventName, handleUserInteraction);
@@ -226,13 +246,33 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         });
       } else {
         mapInstance.setCenter(coords);
-        mapInstance.setZoom(11);
+        mapInstance.setZoom(13);
       }
 
       mapInstance.on('remove', stopOrbit);
 
       mapInstance.on('load', async () => {
-        applyOverlayLayers(mapInstance, overlayVisibilityDefaults);
+        if (!mapInstance.getSource('modal-hillshade')) {
+          mapInstance.addSource('modal-hillshade', {
+            type: 'raster-dem',
+            url: 'https://tiles.mapterhorn.com/tilejson.json',
+            tileSize: 256,
+          });
+        }
+
+        if (!mapInstance.getLayer('modal-hillshade-layer')) {
+          mapInstance.addLayer({
+            id: 'modal-hillshade-layer',
+            type: 'hillshade',
+            source: 'modal-hillshade',
+            paint: {
+              'hillshade-exaggeration': 0.3,
+              'hillshade-shadow-color': '#000000',
+            },
+          });
+        }
+
+        applyOverlayLayers(mapInstance, overlayVisibilityRef.current);
 
         if (!mapInstance.getSource('modal-terrain-dem')) {
           mapInstance.addSource('modal-terrain-dem', {
@@ -365,8 +405,28 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         });
         mapInstance.remove();
       }
+      expandedMapInstanceRef.current = null;
     };
   }, [mapExpanded, refuge, refuges, overlayVisibilityDefaults]);
+
+  useEffect(() => {
+    overlayVisibilityRef.current = overlayVisibility;
+  }, [overlayVisibility]);
+
+  useEffect(() => {
+    if (!mapExpanded) return;
+    const map = expandedMapInstanceRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+
+    applyOverlayLayers(map, overlayVisibility);
+  }, [mapExpanded, overlayVisibility]);
+
+  const toggleOverlayLayer = (layerId) => {
+    setOverlayVisibility((prev) => ({
+      ...prev,
+      [layerId]: !prev[layerId],
+    }));
+  };
 
   return (
     <AnimatePresence>
@@ -842,12 +902,80 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
                     alignItems: 'center',
                     justifyContent: 'center',
                     color: 'white',
-                    cursor: 'pointer',
-                    zIndex: 2,
-                  }}
-                >
+                  cursor: 'pointer',
+                  zIndex: 2,
+                }}
+              >
                   <X size={20} />
                 </button>
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 16,
+                    left: 16,
+                    zIndex: 2,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.5rem',
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    className="map-layer-toggle-button"
+                    aria-label="Basculer le menu des fonds"
+                    aria-expanded={showLayerMenu}
+                    onClick={() => setShowLayerMenu((open) => !open)}
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: '50%',
+                      border: '1px solid rgba(255,255,255,0.25)',
+                      background: 'rgba(0,0,0,0.5)',
+                      color: 'white',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Layers size={18} />
+                  </button>
+                  {showLayerMenu && (
+                    <div
+                      className="map-layer-menu"
+                      style={{
+                        background: 'rgba(0,0,0,0.6)',
+                        border: '1px solid rgba(255,255,255,0.12)',
+                        borderRadius: '12px',
+                        padding: '0.75rem',
+                        backdropFilter: 'blur(4px)',
+                        minWidth: '260px',
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Fonds supplémentaires</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+                        {OVERLAY_LAYERS.filter((layer) => !layer.alwaysOn).map((layer) => (
+                          <label
+                            key={layer.id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.6rem',
+                              color: 'var(--text-primary)',
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!!overlayVisibility[layer.id]}
+                              onChange={() => toggleOverlayLayer(layer.id)}
+                            />
+                            <span>{layer.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <div
                   style={{
                     position: 'absolute',
