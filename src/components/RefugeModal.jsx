@@ -152,51 +152,56 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       }
     };
 
-    const orbit = (ts) => {
-      if (!mapInstance) return;
+      const orbit = (ts) => {
+        if (!mapInstance) return;
 
-      const path = orbitPathRef.current;
-      const target = orbitTargetRef.current;
+        const path = orbitPathRef.current;
+        const target = orbitTargetRef.current;
 
-      if (path?.length && target) {
-        const timestamp = ts ?? performance.now();
-        if (!orbitStartRef.current) {
-          orbitStartRef.current = timestamp;
-        }
+        if (path?.length && target) {
+          const timestamp = ts ?? performance.now();
+          if (!orbitStartRef.current) {
+            orbitStartRef.current = timestamp;
+          }
 
-        const duration = 30000; // 30s full orbit
-        const progress = ((timestamp - orbitStartRef.current) % duration) / duration;
-        const scaled = progress * path.length;
-        const idx = Math.floor(scaled) % path.length;
-        const nextIdx = (idx + 1) % path.length;
-        const t = scaled - Math.floor(scaled);
+          const duration = 30000; // 30s full orbit
+          const progress = ((timestamp - orbitStartRef.current) % duration) / duration;
+          const scaled = progress * path.length;
+          const idx = Math.floor(scaled) % path.length;
+          const nextIdx = (idx + 1) % path.length;
+          const t = scaled - Math.floor(scaled);
 
-        const from = path[idx];
-        const to = path[nextIdx];
+          const from = path[idx];
+          const to = path[nextIdx];
 
-        const interpolateCoord = (a, b, factor) =>
-          new maplibregl.MercatorCoordinate(
-            a.x + (b.x - a.x) * factor,
-            a.y + (b.y - a.y) * factor,
-            a.z + (b.z - a.z) * factor
+          const interpolateCoord = (a, b, factor) => ({
+            lng: a.lng + (b.lng - a.lng) * factor,
+            lat: a.lat + (b.lat - a.lat) * factor,
+            altitude: a.altitude + (b.altitude - a.altitude) * factor,
+          });
+
+          const cameraPosition = interpolateCoord(from, to, t);
+          const cameraOptions = mapInstance.calculateCameraOptionsFromTo(
+            cameraPosition,
+            cameraPosition.altitude,
+            target,
+            target.altitude
           );
 
-        const camera = mapInstance.getFreeCameraOptions();
-        camera.position = interpolateCoord(from, to, t);
-        camera.lookAtPoint(target);
+          if (cameraOptions) {
+            mapInstance.jumpTo(cameraOptions);
+          }
+        } else {
+          const newBearing = (mapInstance.getBearing() + 0.15) % 360;
+          mapInstance.rotateTo(newBearing, {
+            duration: 0,
+            animate: false,
+            around: selectedLocation || mapInstance.getCenter(),
+          });
+        }
 
-        mapInstance.setFreeCameraOptions(camera);
-      } else {
-        const newBearing = (mapInstance.getBearing() + 0.15) % 360;
-        mapInstance.rotateTo(newBearing, {
-          duration: 0,
-          animate: false,
-          around: selectedLocation || mapInstance.getCenter(),
-        });
-      }
-
-      animationFrame = requestAnimationFrame(orbit);
-    };
+        animationFrame = requestAnimationFrame(orbit);
+      };
 
     const startOrbit = () => {
       stopOrbit();
@@ -445,12 +450,12 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           const buildOrbitPath = () => {
             const centerElevation = mapInstance.queryTerrainElevation(selectedLocation) || 0;
             const locationCenter = selectedLocation;
-            const target = maplibregl.MercatorCoordinate.fromLngLat(
-              locationCenter,
-              centerElevation + 5
-            );
 
-            orbitTargetRef.current = target;
+            orbitTargetRef.current = {
+              lng: locationCenter.lng,
+              lat: locationCenter.lat,
+              altitude: centerElevation + 5,
+            };
 
             const radiusMeters = 800;
             const samples = 72;
@@ -474,12 +479,11 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
             const clearance = Math.max(40, maxElevation - centerElevation + 60);
 
-            orbitPathRef.current = ringSamples.map((sample) =>
-              maplibregl.MercatorCoordinate.fromLngLat(
-                { lng: sample.lng, lat: sample.lat },
-                (sample.elevation ?? centerElevation) + clearance
-              )
-            );
+            orbitPathRef.current = ringSamples.map((sample) => ({
+              lng: sample.lng,
+              lat: sample.lat,
+              altitude: (sample.elevation ?? centerElevation) + clearance,
+            }));
           };
 
           buildOrbitPath();
