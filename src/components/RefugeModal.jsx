@@ -355,8 +355,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             const rotation = downhillAngle - Math.PI / 2;
 
             // 2. Analyze Surroundings for Camera Safety
-            const checkRadius = 0.005; // ~400-500m
-            const samples = 12;
+            const checkRadius = 0.01; // ~800m - 1km (Camera orbit path)
+            const samples = 16;
             let maxElevDiff = -Infinity;
 
             for (let i = 0; i < samples; i++) {
@@ -375,15 +375,15 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             let zoom = 14.8; // Further away
             let offsetY = 150;
 
-            if (maxElevDiff > 150) {
-              // High walls around -> Look down, maybe zoom out more
-              pitch = 45;
-              offsetY = 80;
-            } else if (maxElevDiff > 50) {
-              pitch = 55;
-              offsetY = 120;
+            if (maxElevDiff > 200) {
+              // Very high walls
+              pitch = 40;
+              offsetY = 60;
+            } else if (maxElevDiff > 100) {
+              pitch = 50;
+              offsetY = 100;
             } else if (maxElevDiff < -50) {
-              // Peak -> Can look more horizontally
+              // Peak
               pitch = 70;
               offsetY = 180;
             }
@@ -456,16 +456,24 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           mapInstance.addLayer(customLayer);
 
-          mapInstance.easeTo({
-            center: selectedLocation,
-            pitch: pitch,
-            zoom: zoom,
-            duration: 2000,
-            offset: [0, offsetY]
-          });
+          // Delay the fly-in to ensure top-down view is established and terrain loads
+          setTimeout(() => {
+            mapInstance.flyTo({
+              center: selectedLocation,
+              pitch: pitch,
+              zoom: zoom,
+              bearing: 0,
+              speed: 0.5, // Slower, smoother fly
+              curve: 1.2,
+              offset: [0, offsetY],
+              essential: true
+            });
 
-          startOrbit();
-          resetIdleTimer();
+            mapInstance.once('moveend', () => {
+              startOrbit();
+              resetIdleTimer();
+            });
+          }, 600);
         } catch (error) {
           console.error('Failed to load 3D model', error);
         }
