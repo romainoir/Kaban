@@ -396,6 +396,9 @@ function App() {
   };
 
   const handleBoundsChange = (bounds) => {
+    // If the map is hidden (expanded panel), do not update bounds as they might be invalid (0x0 size)
+    if (panelMode === 'expanded') return;
+
     const values = [bounds?.north, bounds?.south, bounds?.east, bounds?.west];
     if (values.some((v) => typeof v !== 'number' || !Number.isFinite(v))) return;
 
@@ -926,12 +929,12 @@ function App() {
               overflowY: 'auto'
             }}
           >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-                <div>
-                  <h2 style={{ margin: 0 }}>Filtres</h2>
-                </div>
-                <button
-                  onClick={() => setShowFiltersModal(false)}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Filtres</h2>
+              </div>
+              <button
+                onClick={() => setShowFiltersModal(false)}
                 className="btn ghost"
                 style={{ padding: '4px' }}
               >
