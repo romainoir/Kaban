@@ -15,11 +15,22 @@ const loadThreeStack = async () => {
     }
 
     try {
-      const [{ default: THREE, GLTFLoader }] = await Promise.all([import('../utils/threeFallback.js')]);
-      return { THREE, GLTFLoader, isFallback: true };
+      const [three, loaderModule] = await Promise.all([
+        import(/* @vite-ignore */ 'https://unpkg.com/three@0.169.0/build/three.module.js'),
+        import(/* @vite-ignore */ 'https://unpkg.com/three@0.169.0/examples/jsm/loaders/GLTFLoader.js'),
+      ]);
+
+      return { THREE: three, GLTFLoader: loaderModule.GLTFLoader, isFallback: false };
     } catch (error) {
       console.error('Unable to load Three.js stack', error);
-      return { THREE: null, GLTFLoader: null, isFallback: true };
+
+      try {
+        const [{ default: THREE, GLTFLoader }] = await Promise.all([import('../utils/threeFallback.js')]);
+        return { THREE, GLTFLoader, isFallback: true };
+      } catch (fallbackError) {
+        console.error('Unable to load fallback Three.js stack', fallbackError);
+        return { THREE: null, GLTFLoader: null, isFallback: true };
+      }
     }
   })();
 
@@ -163,9 +174,12 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         try {
           const { THREE, GLTFLoader } = await loadThreeStack();
           if (!THREE || !GLTFLoader) return;
+
           const loader = new GLTFLoader();
-          const basePath = import.meta.env.BASE_URL || '/';
-          const modelUrl = new URL('refuge_LP.glb', new URL(basePath, window.location.origin)).href;
+          loader.setCrossOrigin('anonymous');
+          loader.setResourcePath('https://maplibre.org/maplibre-gl-js/docs/assets/34M_17/');
+
+          const modelUrl = 'https://maplibre.org/maplibre-gl-js/docs/assets/34M_17/34M_17.gltf';
           const gltf = await loader.loadAsync(modelUrl);
           const model = gltf?.scene;
 
@@ -173,7 +187,12 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             return;
           }
 
-          model.scale.setScalar(0.7);
+          const box = new THREE.Box3().setFromObject(model);
+          const center = box.getCenter(new THREE.Vector3());
+          const maxDimension = Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z, 1);
+
+          model.position.sub(center);
+          model.scale.setScalar(60 / maxDimension);
 
           const customLayer = {
             id: 'refuge-3d-model',

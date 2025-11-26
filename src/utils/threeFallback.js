@@ -92,6 +92,18 @@ const THREE = {
 class GLTFLoader {
   constructor() {
     this.isFallback = true;
+    this.crossOrigin = 'anonymous';
+    this.resourcePath = '';
+  }
+
+  setCrossOrigin(value) {
+    this.crossOrigin = value;
+    return this;
+  }
+
+  setResourcePath(path) {
+    this.resourcePath = path;
+    return this;
   }
 
   async loadAsync() {
