@@ -75,14 +75,6 @@ function App() {
   const searchTimeoutRef = useRef(null);
   const [panelMode, setPanelMode] = useState('normal'); // 'collapsed', 'normal', 'expanded'
 
-  // Disable map filter when map is hidden (expanded mode) or when a massif is selected
-  useEffect(() => {
-    if (panelMode === 'expanded' && useMapFilter) {
-      setUseMapFilter(false);
-      setFilters(prev => ({ ...prev, useMapFilter: false }));
-    }
-  }, [panelMode]);
-
   // Disable map filter when a specific massif is selected (to avoid double-filtering)
   useEffect(() => {
     if (filters.massif !== 'all' && useMapFilter) {
