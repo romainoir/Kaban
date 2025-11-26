@@ -428,7 +428,9 @@ const GeoFilterMap = ({
       }
 
       if (!map.getLayer(layer.layerId)) {
-        const firstLayerId = map.getStyle()?.layers?.[0]?.id;
+        const styleLayers = map.getStyle()?.layers || [];
+        const backgroundIndex = styleLayers.findIndex((l) => l.type === 'background');
+        const beforeId = backgroundIndex >= 0 ? styleLayers[backgroundIndex + 1]?.id : styleLayers[0]?.id;
         map.addLayer(
           {
             id: layer.layerId,
@@ -436,8 +438,15 @@ const GeoFilterMap = ({
             source: layer.sourceId,
             paint: { 'raster-opacity': layer.defaultOpacity ?? 1 },
           },
-          firstLayerId || 'ml-refuges-clusters'
+          beforeId || 'ml-refuges-clusters'
         );
+      } else {
+        const styleLayers = map.getStyle()?.layers || [];
+        const backgroundIndex = styleLayers.findIndex((l) => l.type === 'background');
+        const beforeId = backgroundIndex >= 0 ? styleLayers[backgroundIndex + 1]?.id : styleLayers[0]?.id;
+        if (beforeId) {
+          map.moveLayer(layer.layerId, beforeId);
+        }
       }
 
       const isVisible = layer.alwaysOn || overlayVisibility[layer.id];
