@@ -184,11 +184,11 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         container: expandedMapRef.current,
         style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
         center: coords,
-        zoom: 14,
+        zoom: 12,
         pitch: 55,
         bearing: -15,
         attributionControl: true,
-        minZoom: 13,
+        minZoom: 11,
         maxZoom: 17,
         dragPan: false,
         dragRotate: false,
@@ -201,8 +201,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       expandedMapInstanceRef.current = mapInstance;
 
       const lockBounds = new maplibregl.LngLatBounds(
-        [selectedLocation.lng - 0.0005, selectedLocation.lat - 0.0005],
-        [selectedLocation.lng + 0.0005, selectedLocation.lat + 0.0005]
+        [selectedLocation.lng - 0.02, selectedLocation.lat - 0.02],
+        [selectedLocation.lng + 0.02, selectedLocation.lat + 0.02]
       );
       mapInstance.setMaxBounds(lockBounds);
 
