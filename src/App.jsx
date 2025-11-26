@@ -214,6 +214,10 @@ function App() {
   }, []);
 
   const [massifsData, setMassifsData] = useState(null);
+  const massifById = useMemo(() => {
+    if (!massifsData) return new Map();
+    return new Map(massifsData.features.map(f => [f.properties.id.toString(), f]));
+  }, [massifsData]);
 
   // Load massifs and pre-calculate bboxes
   useEffect(() => {
@@ -271,6 +275,13 @@ function App() {
     if (!massifsData || filters.massif === 'all') return null;
     return massifsData.features.find(f => f.properties.id.toString() === filters.massif)?.geometry;
   }, [massifsData, filters.massif]);
+
+  const selectedMassif = useMemo(() => {
+    if (!selectedRefuge) return null;
+    const massifId = refugeMassifMap[selectedRefuge.properties.id];
+    if (!massifId) return null;
+    return massifById.get(massifId) || null;
+  }, [selectedRefuge, refugeMassifMap, massifById]);
 
   const refugesAfterFiltersNoMap = useMemo(() => {
     const isYes = (val) => val && !val.toLowerCase().includes('non');
@@ -859,6 +870,7 @@ function App() {
         onToggleLike={() => selectedRefuge && toggleLike(selectedRefuge.properties.id)}
         isDisliked={selectedRefuge ? dislikedRefuges.includes(selectedRefuge.properties.id) : false}
         onToggleDislike={() => selectedRefuge && toggleDislike(selectedRefuge.properties.id)}
+        massif={selectedMassif}
       />
 
       {/* Filters Modal (includes spider chart) */}
