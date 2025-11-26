@@ -20,7 +20,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
   const hasLatrines = details?.latrines && !details.latrines.toLowerCase().includes('non');
   const placeCount = places?.valeur ?? '?';
   const mainPhoto = photos && photos.length > 0 ? photos[photos.length - 1] : null;
-  const massifBreadcrumb = massif ? ['France', massif.properties?.nom].filter(Boolean) : ['Massif non identifié'];
+  const massifBreadcrumb = massif ? [massif.properties?.nom].filter(Boolean) : ['Massif non identifié'];
 
   const openLightbox = (idx) => {
     if (!photos || !photos.length) return;
