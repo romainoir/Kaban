@@ -709,27 +709,42 @@ const GeoFilterMap = ({
             <Layers size={18} />
           </button>
           {showLayerMenu && (
-            <div className={`map-layer-menu ${compact ? 'compact' : ''}`}>
-              <div className="map-layer-menu-title">Fonds supplémentaires</div>
+            <div className={`map-layer-menu ${compact ? 'compact' : ''}`} style={{
+              left: '50%',
+              transform: 'translateX(-50%)',
+              bottom: '60px',
+              minWidth: '200px'
+            }}>
+              <div className="map-layer-menu-title" style={{ fontSize: '0.75rem', textAlign: 'center', marginBottom: '8px' }}>
+                Fonds<br />supplémentaires
+              </div>
               <div className="map-layer-menu-list">
                 {OVERLAY_LAYERS.filter((layer) => !layer.alwaysOn).map((layer) => (
-                  <label key={layer.id} className="map-layer-toggle">
-                    <input
-                      type="checkbox"
-                      checked={!!overlayVisibility[layer.id]}
-                      onChange={() => toggleOverlayLayer(layer.id)}
-                    />
+                  <div
+                    key={layer.id}
+                    className={`map-layer-toggle ${overlayVisibility[layer.id] ? 'active' : ''}`}
+                    onClick={() => toggleOverlayLayer(layer.id)}
+                    style={{
+                      border: overlayVisibility[layer.id] ? '1px solid var(--accent)' : '1px solid rgba(255,255,255,0.1)',
+                      background: overlayVisibility[layer.id] ? 'rgba(46, 125, 50, 0.2)' : 'rgba(255,255,255,0.03)'
+                    }}
+                  >
                     <div className="map-layer-toggle-info">
-                      <span className="map-layer-name">{layer.label}</span>
+                      <span className="map-layer-name" style={{ color: overlayVisibility[layer.id] ? '#fff' : 'var(--text-secondary)' }}>
+                        {layer.label}
+                      </span>
                       {layerPreviews[layer.id] && (
                         <span
                           className="map-layer-preview"
-                          style={{ backgroundImage: `url(${layerPreviews[layer.id]})` }}
+                          style={{
+                            backgroundImage: `url(${layerPreviews[layer.id]})`,
+                            borderColor: overlayVisibility[layer.id] ? 'var(--accent)' : 'rgba(255,255,255,0.2)'
+                          }}
                           aria-hidden="true"
                         />
                       )}
                     </div>
-                  </label>
+                  </div>
                 ))}
               </div>
             </div>
