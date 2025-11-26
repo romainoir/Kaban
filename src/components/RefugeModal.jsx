@@ -1,12 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, MapPin, Droplets, Flame, Bed, ExternalLink, TreePine, Tent, MessageSquare, ChevronLeft, ChevronRight, Star, Heart, Ban } from 'lucide-react';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 
-const RefugeModal = ({ refuge, onClose, isStarred, onToggleStar, isLiked, onToggleLike, isDisliked, onToggleDislike }) => {
+const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, isLiked, onToggleLike, isDisliked, onToggleDislike }) => {
   if (!refuge) return null;
 
   const { nom, coord, details, photos, remarks, places, lien, type, comments = [] } = refuge.properties;
   const [lightboxIndex, setLightboxIndex] = useState(null);
+  const [mapExpanded, setMapExpanded] = useState(false);
+  const miniMapContainerRef = useRef(null);
+  const miniMapRef = useRef(null);
+  const expandedMapRef = useRef(null);
 
   const hasWater = details?.water && !details.water.toLowerCase().includes('non');
   const hasWood = details?.wood && !details.wood.toLowerCase().includes('non');
@@ -26,6 +32,76 @@ const RefugeModal = ({ refuge, onClose, isStarred, onToggleStar, isLiked, onTogg
       return next;
     });
   };
+
+  useEffect(() => {
+    if (!miniMapContainerRef.current) return undefined;
+    const coords = refuge.geometry?.coordinates;
+    if (!coords || coords.length < 2) return undefined;
+
+    if (miniMapRef.current) {
+      miniMapRef.current.remove();
+      miniMapRef.current = null;
+    }
+
+    const map = new maplibregl.Map({
+      container: miniMapContainerRef.current,
+      style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
+      center: coords,
+      zoom: 12,
+      interactive: false,
+      attributionControl: false,
+    });
+
+    map.on('load', () => {
+      new maplibregl.Marker({ color: '#f97316' }).setLngLat(coords).addTo(map);
+    });
+
+    miniMapRef.current = map;
+
+    return () => {
+      if (miniMapRef.current) {
+        miniMapRef.current.remove();
+        miniMapRef.current = null;
+      }
+    };
+  }, [refuge]);
+
+  useEffect(() => {
+    if (!mapExpanded || !expandedMapRef.current) return undefined;
+
+    const coords = refuge.geometry?.coordinates || [6.4, 45.2];
+    const map = new maplibregl.Map({
+      container: expandedMapRef.current,
+      style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
+      center: coords,
+      zoom: 8,
+      attributionControl: true,
+    });
+
+    const bounds = new maplibregl.LngLatBounds();
+    const features = Array.isArray(refuges) ? refuges : [];
+
+    features.forEach((feature) => {
+      const position = feature.geometry?.coordinates;
+      if (!position || position.length < 2) return;
+      const isSelected = feature.properties?.id === refuge.properties?.id;
+
+      new maplibregl.Marker({ color: isSelected ? '#f97316' : '#38bdf8' })
+        .setLngLat(position)
+        .addTo(map);
+
+      bounds.extend(position);
+    });
+
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, { padding: 50, maxZoom: 12 });
+    } else {
+      map.setCenter(coords);
+      map.setZoom(10);
+    }
+
+    return () => map.remove();
+  }, [mapExpanded, refuge, refuges]);
 
   return (
     <AnimatePresence>
@@ -270,8 +346,9 @@ const RefugeModal = ({ refuge, onClose, isStarred, onToggleStar, isLiked, onTogg
                   borderRadius: '12px',
                   border: '1px solid rgba(255,255,255,0.08)',
                   position: 'relative',
+                  cursor: photos && photos.length > 0 ? 'pointer' : 'default',
                 }}
-                onClick={() => openLightbox(0)}
+                onClick={() => photos && photos.length > 0 && openLightbox(photos.length - 1)}
                 role="button"
                 tabIndex={0}
               >
@@ -327,6 +404,39 @@ const RefugeModal = ({ refuge, onClose, isStarred, onToggleStar, isLiked, onTogg
                   </div>
                 </div>
               )}
+
+              <div className="glass-panel" style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <MapPin size={18} />
+                    <strong>Localisation</strong>
+                  </div>
+                  <button
+                    onClick={() => setMapExpanded(true)}
+                    style={{
+                      background: 'rgba(255,255,255,0.06)',
+                      border: '1px solid rgba(255,255,255,0.12)',
+                      color: 'var(--text-primary)',
+                      borderRadius: '12px',
+                      padding: '0.35rem 0.75rem',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Agrandir la carte
+                  </button>
+                </div>
+                <div
+                  ref={miniMapContainerRef}
+                  style={{
+                    height: '200px',
+                    borderRadius: '12px',
+                    overflow: 'hidden',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => setMapExpanded(true)}
+                />
+              </div>
             </div>
           </div>
 
@@ -423,6 +533,68 @@ const RefugeModal = ({ refuge, onClose, isStarred, onToggleStar, isLiked, onTogg
                 }}
                 onClick={(e) => e.stopPropagation()}
               />
+            </div>
+          )}
+
+          {mapExpanded && (
+            <div
+              onClick={() => setMapExpanded(false)}
+              style={{
+                position: 'fixed',
+                inset: 0,
+                background: 'rgba(0,0,0,0.8)',
+                zIndex: 1250,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '1.5rem',
+              }}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: 'relative',
+                  width: 'min(1100px, 95vw)',
+                  height: 'min(750px, 85vh)',
+                  background: 'var(--card-bg)',
+                  borderRadius: '14px',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  overflow: 'hidden',
+                  boxShadow: '0 24px 80px rgba(0,0,0,0.45)',
+                }}
+              >
+                <button
+                  onClick={() => setMapExpanded(false)}
+                  style={{
+                    position: 'absolute',
+                    top: 14,
+                    right: 14,
+                    background: 'rgba(0,0,0,0.5)',
+                    border: '1px solid rgba(255,255,255,0.25)',
+                    borderRadius: '50%',
+                    width: 42,
+                    height: 42,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'white',
+                    cursor: 'pointer',
+                    zIndex: 2,
+                  }}
+                >
+                  <X size={20} />
+                </button>
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                  }}
+                  ref={expandedMapRef}
+                />
+              </div>
             </div>
           )}
         </motion.div>
