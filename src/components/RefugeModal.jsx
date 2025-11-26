@@ -197,7 +197,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           const maxDimension = Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z, 1);
 
           model.position.sub(center);
-          model.scale.setScalar(60 / maxDimension);
+          model.scale.setScalar((60 * 15) / maxDimension);
 
           const customLayer = {
             id: 'refuge-3d-model',
@@ -209,8 +209,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               this.scene.rotateX(Math.PI / 2);
               this.scene.scale.multiply(new THREE.Vector3(1, 1, -1));
 
-              const ambient = new THREE.AmbientLight(0xffffff, 0.6);
-              const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+              const ambient = new THREE.AmbientLight(0xffffff, 1.2);
+              const sun = new THREE.DirectionalLight(0xffffff, 0.6);
               sun.position.set(80, 120, -60).normalize();
               this.scene.add(ambient);
               this.scene.add(sun);
