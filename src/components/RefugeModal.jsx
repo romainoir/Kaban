@@ -19,6 +19,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
   const hasWood = details?.wood && !details.wood.toLowerCase().includes('non');
   const hasLatrines = details?.latrines && !details.latrines.toLowerCase().includes('non');
   const placeCount = places?.valeur ?? '?';
+  const mainPhoto = photos && photos.length > 0 ? photos[photos.length - 1] : null;
 
   const openLightbox = (idx) => {
     if (!photos || !photos.length) return;
@@ -349,30 +350,29 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               <div
                 style={{
                   height: '240px',
-                  background: photos && photos.length > 0 ? `url(${photos[photos.length - 1]}) center/cover` : 'linear-gradient(45deg, var(--bg-color), var(--card-bg))',
                   borderRadius: '12px',
                   border: '1px solid rgba(255,255,255,0.08)',
                   position: 'relative',
-                  cursor: photos && photos.length > 0 ? 'pointer' : 'default',
+                  cursor: mainPhoto ? 'pointer' : 'default',
+                  overflow: 'hidden',
+                  background: mainPhoto ? 'var(--card-bg)' : 'linear-gradient(45deg, var(--bg-color), var(--card-bg))',
                 }}
-                onClick={() => photos && photos.length > 0 && openLightbox(photos.length - 1)}
+                onClick={() => mainPhoto && openLightbox(photos.length - 1)}
                 role="button"
                 tabIndex={0}
               >
-                <div
-                  style={{
-                    position: 'absolute',
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    padding: '0.75rem 1rem',
-                    background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent)',
-                    color: 'var(--text-primary)',
-                    fontSize: '0.9rem',
-                  }}
-                >
-                  Survolez une vignette pour zoomer
-                </div>
+                {mainPhoto && (
+                  <img
+                    src={mainPhoto}
+                    alt="Vue principale du refuge"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      display: 'block',
+                    }}
+                  />
+                )}
               </div>
 
               {photos && photos.length > 1 && (
@@ -413,24 +413,9 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               )}
 
               <div className="glass-panel" style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <MapPin size={18} />
-                    <strong>Localisation</strong>
-                  </div>
-                  <button
-                    onClick={() => setMapExpanded(true)}
-                    style={{
-                      background: 'rgba(255,255,255,0.06)',
-                      border: '1px solid rgba(255,255,255,0.12)',
-                      color: 'var(--text-primary)',
-                      borderRadius: '12px',
-                      padding: '0.35rem 0.75rem',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Agrandir la carte
-                  </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', justifyContent: 'flex-start' }}>
+                  <MapPin size={18} />
+                  <strong>Localisation</strong>
                 </div>
                 <div
                   ref={miniMapContainerRef}

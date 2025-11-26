@@ -576,13 +576,6 @@ function createRefugeMarker(f, map, onSelect, hoverCtx, options = {}) {
     hut.appendChild(icon);
   }
 
-  if (p.places?.valeur) {
-    const badge = document.createElement('div');
-    badge.className = 'hut-badge';
-    badge.textContent = p.places.valeur;
-    hut.appendChild(badge);
-  }
-
   el.appendChild(hut);
 
   const statusBar = document.createElement('div');
