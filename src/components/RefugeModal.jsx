@@ -15,11 +15,22 @@ const loadThreeStack = async () => {
     }
 
     try {
-      const [{ default: THREE, GLTFLoader }] = await Promise.all([import('../utils/threeFallback.js')]);
-      return { THREE, GLTFLoader, isFallback: true };
+      const [three, loaderModule] = await Promise.all([
+        import(/* @vite-ignore */ 'https://unpkg.com/three@0.169.0/build/three.module.js'),
+        import(/* @vite-ignore */ 'https://unpkg.com/three@0.169.0/examples/jsm/loaders/GLTFLoader.js'),
+      ]);
+
+      return { THREE: three, GLTFLoader: loaderModule.GLTFLoader, isFallback: false };
     } catch (error) {
       console.error('Unable to load Three.js stack', error);
-      return { THREE: null, GLTFLoader: null, isFallback: true };
+
+      try {
+        const [{ default: THREE, GLTFLoader }] = await Promise.all([import('../utils/threeFallback.js')]);
+        return { THREE, GLTFLoader, isFallback: true };
+      } catch (fallbackError) {
+        console.error('Unable to load fallback Three.js stack', fallbackError);
+        return { THREE: null, GLTFLoader: null, isFallback: true };
+      }
     }
   })();
 
