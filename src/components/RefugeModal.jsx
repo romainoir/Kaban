@@ -151,7 +151,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
     const orbit = () => {
       if (!mapInstance) return;
-      const newBearing = (mapInstance.getBearing() + 0.06) % 360;
+      const newBearing = (mapInstance.getBearing() + 0.15) % 360;
       mapInstance.rotateTo(newBearing, {
         duration: 0,
         animate: false,
