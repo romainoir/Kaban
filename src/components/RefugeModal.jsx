@@ -185,8 +185,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
         center: coords,
         zoom: 12,
-        pitch: 55,
-        bearing: -15,
+        pitch: 0,
+        bearing: 0,
         attributionControl: true,
         minZoom: 11,
         maxZoom: 17,
@@ -236,17 +236,10 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       });
 
       if (!bounds.isEmpty()) {
-        mapInstance.fitBounds(bounds, { padding: 60, maxZoom: 13 });
-        mapInstance.once('idle', () => {
-          mapInstance.easeTo({
-            center: selectedLocation,
-            zoom: Math.max(mapInstance.getZoom(), 13),
-            duration: 500,
-          });
-        });
+        mapInstance.fitBounds(bounds, { padding: 60, maxZoom: 12 });
       } else {
         mapInstance.setCenter(coords);
-        mapInstance.setZoom(13);
+        mapInstance.setZoom(12);
       }
 
       mapInstance.on('remove', stopOrbit);
@@ -281,7 +274,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             tileSize: 256,
           });
 
-          mapInstance.setTerrain({ source: 'modal-terrain-dem', exaggeration: 1.3 });
+          mapInstance.setTerrain({ source: 'modal-terrain-dem', exaggeration: 1.0 });
         }
 
         try {
@@ -467,7 +460,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             center: selectedLocation,
             pitch: pitch,
             zoom: zoom,
-            duration: 1000,
+            duration: 2000,
             offset: [0, offsetY]
           });
 
