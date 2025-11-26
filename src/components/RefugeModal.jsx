@@ -191,10 +191,10 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         minZoom: 11,
         maxZoom: 17,
         dragPan: false,
-        dragRotate: false,
+        dragRotate: true,
         keyboard: false,
-        touchPitch: false,
-        pitchWithRotate: false,
+        touchPitch: true,
+        pitchWithRotate: true,
         boxZoom: false,
       });
 
