@@ -176,17 +176,6 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           });
 
           mapInstance.setTerrain({ source: 'modal-terrain-dem', exaggeration: 1.3 });
-
-          if (!mapInstance.getLayer('modal-sky')) {
-            mapInstance.addLayer({
-              id: 'modal-sky',
-              type: 'sky',
-              paint: {
-                'sky-type': 'atmosphere',
-                'sky-atmosphere-sun-intensity': 12,
-              },
-            });
-          }
         }
 
         try {
