@@ -5,6 +5,9 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { createRefugeMarker } from './GeoFilterMap';
 
+const CDN_THREE_URL = 'https://esm.sh/three@0.169.0';
+const CDN_GLTF_URL = 'https://esm.sh/three@0.169.0/examples/jsm/loaders/GLTFLoader.js';
+
 let threeStackPromise;
 const loadThreeStack = async () => {
   if (threeStackPromise) return threeStackPromise;
@@ -16,11 +19,14 @@ const loadThreeStack = async () => {
 
     try {
       const [three, loaderModule] = await Promise.all([
-        import(/* @vite-ignore */ 'https://unpkg.com/three@0.169.0/build/three.module.js'),
-        import(/* @vite-ignore */ 'https://unpkg.com/three@0.169.0/examples/jsm/loaders/GLTFLoader.js'),
+        import(/* @vite-ignore */ CDN_THREE_URL),
+        import(/* @vite-ignore */ CDN_GLTF_URL),
       ]);
 
-      return { THREE: three, GLTFLoader: loaderModule.GLTFLoader, isFallback: false };
+      const THREE = three?.default ?? three;
+      const GLTFLoader = loaderModule?.GLTFLoader ?? loaderModule?.default?.GLTFLoader ?? loaderModule?.default;
+
+      return { THREE, GLTFLoader, isFallback: false };
     } catch (error) {
       console.error('Unable to load Three.js stack', error);
 
