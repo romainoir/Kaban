@@ -1,0 +1,24 @@
+{
+  "name": "Refuge Explorer",
+  "short_name": "Refuges",
+  "description": "Discover, filter, and compare mountain refuges with offline-friendly caching.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1c1917",
+  "theme_color": "#1c1917",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "795x795",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/vite.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
