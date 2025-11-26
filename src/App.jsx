@@ -47,6 +47,22 @@ const createDefaultFilters = () => ({
   useMapFilter: true,
 });
 
+const getHashView = () => {
+  const hash = window.location.hash;
+  if (hash) {
+    const parts = hash.replace('#', '').split('/');
+    if (parts.length === 3) {
+      const zoom = parseFloat(parts[0]);
+      const lat = parseFloat(parts[1]);
+      const lon = parseFloat(parts[2]);
+      if (!isNaN(zoom) && !isNaN(lat) && !isNaN(lon)) {
+        return { center: [lon, lat], zoom };
+      }
+    }
+  }
+  return null;
+};
+
 function App() {
   const [refuges, setRefuges] = useState([]);
   const [selectedRefuge, setSelectedRefuge] = useState(null);
@@ -65,8 +81,19 @@ function App() {
   const scrollRestoreRef = useRef({ body: '', html: '' });
   const [showSpider, setShowSpider] = useState(true);
   const [mapExpanded, setMapExpanded] = useState(false);
-  const [mapView, setMapView] = useState({ center: [6.4, 45.2], zoom: 6 });
+  const [mapView, setMapView] = useState(() => getHashView() || { center: [6.4, 45.2], zoom: 6 });
   const [hoveredRefugeId, setHoveredRefugeId] = useState(null);
+
+  useEffect(() => {
+    const { center, zoom } = mapView;
+    const lat = center[1].toFixed(4);
+    const lon = center[0].toFixed(4);
+    const z = zoom.toFixed(2);
+    const newHash = `#${z}/${lat}/${lon}`;
+    if (window.location.hash !== newHash) {
+      window.location.replace(newHash);
+    }
+  }, [mapView]);
 
   const [isMobileFiltersOpen, setIsMobileFiltersOpen] = useState(false);
   const [showFiltersModal, setShowFiltersModal] = useState(false);
