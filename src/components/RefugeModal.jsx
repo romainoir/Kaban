@@ -164,7 +164,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           const { THREE, GLTFLoader } = await loadThreeStack();
           if (!THREE || !GLTFLoader) return;
           const loader = new GLTFLoader();
-          const modelUrl = new URL('/refuge_LP.glb', import.meta.env.BASE_URL).href;
+          const basePath = import.meta.env.BASE_URL || '/';
+          const modelUrl = new URL('refuge_LP.glb', new URL(basePath, window.location.origin)).href;
           const gltf = await loader.loadAsync(modelUrl);
           const model = gltf?.scene;
 
