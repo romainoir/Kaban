@@ -457,9 +457,9 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
             for (let i = 0; i < samples; i++) {
               const theta = (i / samples) * Math.PI * 2;
-              const { deltaLng, deltaLat } = metersToDegrees(radiusMeters, center.lat, theta);
-              const lng = center.lng + deltaLng;
-              const lat = center.lat + deltaLat;
+              const { deltaLng, deltaLat } = metersToDegrees(radiusMeters, selectedLocation.lat, theta);
+              const lng = selectedLocation.lng + deltaLng;
+              const lat = selectedLocation.lat + deltaLat;
               const elevation =
                 mapInstance.queryTerrainElevation(new maplibregl.LngLat(lng, lat)) ?? centerElevation;
 
