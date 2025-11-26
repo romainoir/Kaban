@@ -113,6 +113,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     let animationFrame;
     let idleTimeout;
     let mapInstance;
+    let selectedLocation;
 
     const userInteractionEvents = ['dragstart', 'zoomstart', 'rotatestart', 'pitchstart', 'movestart'];
 
@@ -125,7 +126,12 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
     const orbit = () => {
       if (!mapInstance) return;
-      mapInstance.setBearing((mapInstance.getBearing() + 0.06) % 360);
+      const newBearing = (mapInstance.getBearing() + 0.06) % 360;
+      mapInstance.rotateTo(newBearing, {
+        duration: 0,
+        animate: false,
+        around: selectedLocation || mapInstance.getCenter(),
+      });
       animationFrame = requestAnimationFrame(orbit);
     };
 
@@ -147,7 +153,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
     const setupExpandedMap = async () => {
       const coords = refuge.geometry?.coordinates || [6.4, 45.2];
-      const selectedLocation = new maplibregl.LngLat(coords[0], coords[1]);
+      selectedLocation = new maplibregl.LngLat(coords[0], coords[1]);
 
       mapInstance = new maplibregl.Map({
         container: expandedMapRef.current,
