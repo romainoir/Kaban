@@ -125,9 +125,11 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     if (!mapExpanded || !expandedMapRef.current) return undefined;
 
     let animationFrame;
+    let cameraTransitionFrame;
     let idleTimeout;
     let mapInstance;
     let selectedLocation;
+    let analyzedTerrain;
 
     const userInteractionEvents = [
       'dragstart',
@@ -149,14 +151,96 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       }
     };
 
+    const toRadians = (degrees) => (degrees * Math.PI) / 180;
+
+    const computeOrbitDistance = (zoomLevel, baseDistance = 420) => {
+      const scaling = Math.pow(1.2, 14 - zoomLevel);
+      return Math.min(Math.max(baseDistance * scaling, 180), 1400);
+    };
+
+    const buildCameraPosition = ({ bearing, pitch, distance, minAltitude }) => {
+      const elevation = (mapInstance.queryTerrainElevation(selectedLocation) || 0) + minAltitude;
+      const targetCoord = maplibregl.MercatorCoordinate.fromLngLat(selectedLocation, elevation);
+      const metersToMercator = targetCoord.meterInMercatorCoordinateUnits();
+
+      const pitchRad = toRadians(pitch);
+      const bearingRad = toRadians(bearing);
+
+      const horizontalDistance = Math.max(60, distance * Math.cos(pitchRad));
+      const verticalDistance = distance * Math.sin(pitchRad);
+
+      const offsetX = Math.sin(bearingRad) * horizontalDistance * metersToMercator;
+      const offsetY = Math.cos(bearingRad) * horizontalDistance * metersToMercator;
+
+      const position = new maplibregl.MercatorCoordinate(
+        targetCoord.x + offsetX,
+        targetCoord.y + offsetY,
+        targetCoord.z + verticalDistance * metersToMercator
+      );
+
+      return { position, targetCoord };
+    };
+
+    const applyFreeCamera = ({ position, targetCoord }) => {
+      const camera = mapInstance.getFreeCameraOptions();
+      camera.position = position;
+      camera.lookAtPoint(targetCoord);
+      mapInstance.setFreeCameraOptions(camera);
+    };
+
+    const animateCameraTransition = (nextPosition, duration = 1400, onFinish) => {
+      if (!nextPosition) return;
+
+      if (cameraTransitionFrame) {
+        cancelAnimationFrame(cameraTransitionFrame);
+        cameraTransitionFrame = null;
+      }
+
+      const startCamera = mapInstance.getFreeCameraOptions();
+      const startPosition = startCamera.position || nextPosition.position;
+      const startTime = performance.now();
+
+      const step = () => {
+        const now = performance.now();
+        const t = Math.min(1, (now - startTime) / duration);
+        const eased = t * t * (3 - 2 * t);
+
+        const x = startPosition.x + (nextPosition.position.x - startPosition.x) * eased;
+        const y = startPosition.y + (nextPosition.position.y - startPosition.y) * eased;
+        const z = startPosition.z + (nextPosition.position.z - startPosition.z) * eased;
+
+        applyFreeCamera({ position: new maplibregl.MercatorCoordinate(x, y, z), targetCoord: nextPosition.targetCoord });
+
+        if (t < 1) {
+          cameraTransitionFrame = requestAnimationFrame(step);
+        } else if (typeof onFinish === 'function') {
+          cameraTransitionFrame = null;
+          onFinish();
+        } else {
+          cameraTransitionFrame = null;
+        }
+      };
+
+      cameraTransitionFrame = requestAnimationFrame(step);
+    };
+
     const orbit = () => {
-      if (!mapInstance) return;
-      const newBearing = (mapInstance.getBearing() + 0.15) % 360;
-      mapInstance.rotateTo(newBearing, {
-        duration: 0,
-        animate: false,
-        around: selectedLocation || mapInstance.getCenter(),
+      if (!mapInstance || !analyzedTerrain) return;
+
+      const currentZoom = mapInstance.getZoom();
+      const distance = computeOrbitDistance(currentZoom, analyzedTerrain.baseDistance);
+      const nextBearing = (mapInstance.getBearing() + 0.15) % 360;
+
+      const cameraPosition = buildCameraPosition({
+        bearing: nextBearing,
+        pitch: analyzedTerrain.pitch,
+        distance,
+        minAltitude: analyzedTerrain.safetyMargin,
       });
+
+      applyFreeCamera(cameraPosition);
+      mapInstance.setBearing(nextBearing, { animate: false });
+
       animationFrame = requestAnimationFrame(orbit);
     };
 
@@ -173,7 +257,28 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     const handleUserInteraction = (event) => {
       if (!event?.originalEvent) return;
       stopOrbit();
+      if (cameraTransitionFrame) {
+        cancelAnimationFrame(cameraTransitionFrame);
+        cameraTransitionFrame = null;
+      }
       resetIdleTimer();
+    };
+
+    const reframeOrbitAfterZoom = () => {
+      if (!mapInstance || !analyzedTerrain) return;
+      stopOrbit();
+
+      const cameraPosition = buildCameraPosition({
+        bearing: mapInstance.getBearing(),
+        pitch: analyzedTerrain.pitch,
+        distance: computeOrbitDistance(mapInstance.getZoom(), analyzedTerrain.baseDistance),
+        minAltitude: analyzedTerrain.safetyMargin,
+      });
+
+      animateCameraTransition(cameraPosition, 800, () => {
+        resetIdleTimer();
+        startOrbit();
+      });
     };
 
     const setupExpandedMap = async () => {
@@ -209,6 +314,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       userInteractionEvents.forEach((eventName) => {
         mapInstance.on(eventName, handleUserInteraction);
       });
+
+      mapInstance.on('zoomend', reframeOrbitAfterZoom);
 
       const bounds = new maplibregl.LngLatBounds();
       const features = Array.isArray(refuges) ? refuges : [];
@@ -340,7 +447,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
             // If elevation data is missing (0), we might get wrong results, but it's a fallback
             if (eN === 0 && eS === 0 && eE === 0 && eW === 0) {
-              return { rotation: 0, pitch: 60, zoom: 15, offsetY: 150 };
+              return { rotation: 0, pitch: 60, zoom: 15, safetyMargin: 60, baseDistance: 420 };
             }
 
             const dz_dy = eN - eS; // North - South
@@ -373,27 +480,28 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             // Heuristics for Camera
             let pitch = 60;
             let zoom = 14.8; // Further away
-            let offsetY = 150;
 
             if (maxElevDiff > 200) {
               // Very high walls
               pitch = 40;
-              offsetY = 60;
             } else if (maxElevDiff > 100) {
               pitch = 50;
-              offsetY = 100;
             } else if (maxElevDiff < -50) {
               // Peak
               pitch = 70;
-              offsetY = 180;
             }
 
-            return { rotation, pitch, zoom, offsetY };
+            const safetyMargin = Math.max(40, 20 + Math.max(0, maxElevDiff));
+            const baseDistance = 420 + Math.max(0, maxElevDiff * 0.8);
+
+            return { rotation, pitch, zoom, safetyMargin, baseDistance };
           };
 
           // Wait a bit for terrain to potentially load if it hasn't
           // But we are in an async flow, so we can just try.
-          const { rotation, pitch, zoom, offsetY } = analyzeTerrain();
+          const { rotation, pitch, zoom, safetyMargin, baseDistance } = analyzeTerrain();
+
+          analyzedTerrain = { pitch, safetyMargin, baseDistance };
 
           model.rotation.y = rotation;
 
@@ -457,23 +565,30 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           mapInstance.addLayer(customLayer);
 
           // Delay the fly-in to ensure top-down view is established and terrain loads
-          setTimeout(() => {
-            mapInstance.flyTo({
-              center: selectedLocation,
-              pitch: pitch,
-              zoom: zoom,
-              bearing: 0,
-              speed: 0.5, // Slower, smoother fly
-              curve: 1.2,
-              offset: [0, offsetY],
-              essential: true
-            });
+          const warmupView = {
+            center: selectedLocation,
+            zoom,
+            pitch: Math.min(20, pitch),
+            bearing: mapInstance.getBearing(),
+            duration: 600,
+            essential: true,
+          };
 
-            mapInstance.once('moveend', () => {
+          mapInstance.easeTo(warmupView);
+
+          const targetCamera = buildCameraPosition({
+            bearing: warmupView.bearing,
+            pitch,
+            distance: computeOrbitDistance(zoom, baseDistance),
+            minAltitude: safetyMargin,
+          });
+
+          mapInstance.once('moveend', () => {
+            animateCameraTransition(targetCamera, 1400, () => {
               startOrbit();
               resetIdleTimer();
             });
-          }, 600);
+          });
         } catch (error) {
           console.error('Failed to load 3D model', error);
         }
@@ -484,11 +599,13 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
     return () => {
       if (animationFrame) cancelAnimationFrame(animationFrame);
+      if (cameraTransitionFrame) cancelAnimationFrame(cameraTransitionFrame);
       if (idleTimeout) clearTimeout(idleTimeout);
       if (mapInstance) {
         userInteractionEvents.forEach((eventName) => {
           mapInstance.off(eventName, handleUserInteraction);
         });
+        mapInstance.off('zoomend', reframeOrbitAfterZoom);
         mapInstance.remove();
       }
       expandedMapInstanceRef.current = null;
