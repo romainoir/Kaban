@@ -6,7 +6,6 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 const WMTS_PREVIEW_COORDS = { z: 12, x: 2072, y: 1475 };
 const IGN_ATTRIBUTION = '© IGN / Geoportail';
 const DEFAULT_BASE_STYLE = 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json';
-const OPENTOPO_BASE_STYLE = 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/accentue.json';
 
 function createIgnTileTemplate(layerName, format = 'image/png') {
   const encodedFormat = encodeURIComponent(format);
@@ -117,7 +116,6 @@ const GeoFilterMap = ({
     }, {})
   );
   const [showLayerMenu, setShowLayerMenu] = useState(false);
-  const currentBaseStyleRef = useRef(DEFAULT_BASE_STYLE);
 
   const ensureRefugeLayers = (map) => {
     if (!map.getSource('refuges')) {
@@ -314,23 +312,6 @@ const GeoFilterMap = ({
         console.error('Error adding massif polygon:', error);
       }
     }
-  };
-
-  const applyBaseStyle = (styleUrl) => {
-    const map = mapRef.current;
-    if (!map || !styleUrl || currentBaseStyleRef.current === styleUrl) return;
-
-    currentBaseStyleRef.current = styleUrl;
-    setMapReady(false);
-    map.setStyle(styleUrl);
-    map.once('style.load', () => {
-      ensureRefugeLayers(map);
-      ensureHillshadeLayer(map);
-      ensureOverlayLayers(map);
-      applyMassifPolygon(map, selectedMassif, selectedMassifPolygon);
-      syncRequestRef.current?.(true);
-      setMapReady(true);
-    });
   };
 
   const layerPreviews = useMemo(
@@ -580,14 +561,6 @@ const GeoFilterMap = ({
 
     ensureOverlayLayers(map);
   }, [mapReady, overlayVisibility]);
-
-  const isOpenTopoActive = !!overlayVisibility['ign-opentopo'];
-
-  useEffect(() => {
-    if (!mapRef.current) return;
-    const targetStyle = isOpenTopoActive ? OPENTOPO_BASE_STYLE : DEFAULT_BASE_STYLE;
-    applyBaseStyle(targetStyle);
-  }, [isOpenTopoActive]);
 
   const toggleOverlayLayer = (layerId) => {
     const layer = OVERLAY_LAYERS.find((l) => l.id === layerId);
