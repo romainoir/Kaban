@@ -341,8 +341,9 @@ function App() {
   const refugesAfterMap = useMemo(() => {
     if (!useMapFilter) return refugesAfterFiltersNoMap;
     if (mapFilteredRefuges && mapFilteredRefuges.length > 0) return mapFilteredRefuges;
+    if (mapFilteredRefuges && cachedMapRefuges.length > 0) return cachedMapRefuges;
     if (cachedMapRefuges.length > 0) return cachedMapRefuges;
-    return mapFilteredRefuges || refugesAfterFiltersNoMap;
+    return mapFilteredRefuges ?? refugesAfterFiltersNoMap;
   }, [useMapFilter, refugesAfterFiltersNoMap, mapFilteredRefuges, cachedMapRefuges]);
 
   // Sync useMapFilter from filters
