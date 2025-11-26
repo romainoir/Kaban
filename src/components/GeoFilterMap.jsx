@@ -546,11 +546,15 @@ function createStatusIcon(icon, type) {
   return badge;
 }
 
-function createRefugeMarker(f, map, onSelect, hoverCtx) {
+function createRefugeMarker(f, map, onSelect, hoverCtx, options = {}) {
   // console.log('createRefugeMarker', f.properties.nom, 'hoverCtx:', !!hoverCtx, 'compact:', hoverCtx?.compact);
   const p = f.properties || {};
   const el = document.createElement('div');
   el.className = 'marker-container';
+
+  if (options.isSelected) {
+    el.classList.add('hovered');
+  }
 
   const hut = document.createElement('div');
   hut.className = 'hut-marker';
@@ -713,3 +717,5 @@ function createRefugeCluster(f, map, thumbCache, hoveredIdRef, hoveredMarkerRef)
 
   return marker;
 }
+
+export { createRefugeMarker };
