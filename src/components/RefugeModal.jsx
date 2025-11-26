@@ -5,7 +5,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { createRefugeMarker } from './GeoFilterMap';
 
-const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, isLiked, onToggleLike, isDisliked, onToggleDislike }) => {
+const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, isLiked, onToggleLike, isDisliked, onToggleDislike, massif }) => {
   if (!refuge) return null;
 
   const { nom, coord, details, photos, remarks, places, lien, type, comments = [] } = refuge.properties;
@@ -20,6 +20,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
   const hasLatrines = details?.latrines && !details.latrines.toLowerCase().includes('non');
   const placeCount = places?.valeur ?? '?';
   const mainPhoto = photos && photos.length > 0 ? photos[photos.length - 1] : null;
+  const massifBreadcrumb = massif ? ['France', massif.properties?.nom].filter(Boolean) : ['Massif non identifié'];
 
   const openLightbox = (idx) => {
     if (!photos || !photos.length) return;
@@ -174,6 +175,21 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
                   <TreePine size={18} /> {type?.valeur}
                 </span>
               </div>
+              {massifBreadcrumb && (
+                <div style={{ marginTop: '0.45rem', display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Massif</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+                    {massifBreadcrumb.map((step, idx) => (
+                      <React.Fragment key={`${step}-${idx}`}>
+                        <span style={{ padding: '0.25rem 0.6rem', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                          {step}
+                        </span>
+                        {idx < massifBreadcrumb.length - 1 && <ChevronRight size={16} style={{ opacity: 0.6 }} />}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <button
