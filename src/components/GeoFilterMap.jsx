@@ -136,6 +136,7 @@ const GeoFilterMap = ({
   likedRefugeIds = [],
   starredRefugeIds = [],
   dislikedRefugeIds = [],
+  preventInitialFit = false,
 }) => {
   const mapRef = useRef(null);
   const containerRef = useRef(null);
@@ -147,7 +148,7 @@ const GeoFilterMap = ({
   const [liveBounds, setLiveBounds] = useState(null);
   const [mapReady, setMapReady] = useState(false);
   const fitHash = useRef('');
-  const userMovedRef = useRef(false);
+  const userMovedRef = useRef(preventInitialFit);
   const hoveredMarkerRef = useRef(null);
   const hoveredIdRef = useRef(null);
   const [overlayVisibility, setOverlayVisibility] = useState(() =>
@@ -710,13 +711,11 @@ const GeoFilterMap = ({
           </button>
           {showLayerMenu && (
             <div className={`map-layer-menu ${compact ? 'compact' : ''}`} style={{
-              left: '50%',
-              transform: 'translateX(-50%)',
               bottom: '60px',
               minWidth: '200px'
             }}>
-              <div className="map-layer-menu-title" style={{ fontSize: '0.75rem', textAlign: 'center', marginBottom: '8px' }}>
-                Fonds<br />supplémentaires
+              <div className="map-layer-menu-title" style={{ fontSize: '0.85rem', marginBottom: '8px' }}>
+                Calques
               </div>
               <div className="map-layer-menu-list">
                 {OVERLAY_LAYERS.filter((layer) => !layer.alwaysOn).map((layer) => (

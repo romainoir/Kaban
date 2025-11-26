@@ -907,6 +907,7 @@ function App() {
             likedRefugeIds={likedRefuges}
             starredRefugeIds={starredRefuges}
             dislikedRefugeIds={dislikedRefuges}
+            preventInitialFit={!!getHashView()}
           />
         </div>
       </div>
