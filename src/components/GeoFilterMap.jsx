@@ -6,6 +6,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 const WMTS_PREVIEW_COORDS = { z: 12, x: 2072, y: 1475 };
 const IGN_ATTRIBUTION = '© IGN / Geoportail';
 const DEFAULT_BASE_STYLE = 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json';
+const ACCENT_BASE_STYLE = 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/accentue.json';
 
 function createIgnTileTemplate(layerName, format = 'image/png') {
   const encodedFormat = encodeURIComponent(format);
@@ -101,6 +102,7 @@ const GeoFilterMap = ({
   const thumbCacheRef = useRef(new Map());
   const syncRequestRef = useRef(() => { });
   const latestDataRef = useRef([]);
+  const baseStyleRef = useRef(DEFAULT_BASE_STYLE);
   const [liveBounds, setLiveBounds] = useState(null);
   const [mapReady, setMapReady] = useState(false);
   const fitHash = useRef('');
@@ -561,6 +563,27 @@ const GeoFilterMap = ({
 
     ensureOverlayLayers(map);
   }, [mapReady, overlayVisibility]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const map = mapRef.current;
+    if (!map) return;
+
+    const isOpenTopoActive = !!overlayVisibility['ign-opentopo'];
+    const targetStyle = isOpenTopoActive ? ACCENT_BASE_STYLE : DEFAULT_BASE_STYLE;
+
+    if (baseStyleRef.current === targetStyle) return;
+
+    const reapplyCustomLayers = () => {
+      ensureRefugeLayers(map);
+      ensureHillshadeLayer(map);
+      ensureOverlayLayers(map);
+    };
+
+    map.once('styledata', reapplyCustomLayers);
+    baseStyleRef.current = targetStyle;
+    map.setStyle(targetStyle);
+  }, [compact, mapReady, overlayVisibility['ign-opentopo']]);
 
   const toggleOverlayLayer = (layerId) => {
     const layer = OVERLAY_LAYERS.find((l) => l.id === layerId);
