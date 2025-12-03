@@ -44,64 +44,57 @@ const loadThreeStack = async () => {
 };
 
 // ============================================================================
-// CINEMATIC CAMERA ORBIT SYSTEM
+// CINEMATIC CAMERA ORBIT - FIXED VERSION
 // 
-// Design principles:
-// 1. Orbit RADIUS (horizontal distance from mesh) is the key parameter
-// 2. When zoom changes, we compute a NEW radius and smoothly transition to it
-// 3. The intro is a slow, curved spiral descent with proper easing
-// 4. Everything feels cinematic and intentional
+// Fixes:
+// 1. Intro ends EXACTLY at orbit start position (no jump)
+// 2. Smooth 60fps orbit (no excessive computation per frame)
+// 3. Zoom changes smoothly expand/contract the orbit
 // ============================================================================
 
 class CinematicOrbit {
   constructor(map, target) {
     this.map = map;
-    this.target = target; // LngLat
+    this.target = target;
     
-    // Orbit parameters
-    this.bearing = 0;           // Current rotation angle (degrees)
-    this.radius = 800;          // Horizontal distance from target (meters)
-    this.height = 400;          // Vertical height above target (meters)
-    this.targetRadius = 300;    // What we're transitioning toward
-    this.targetHeight = 200;    // What we're transitioning toward
+    // Current orbital state
+    this.bearing = 0;
+    this.radius = 50;      // Start close for intro
+    this.height = 1200;    // Start high for intro
     
-    // Speeds and smoothing
-    this.orbitSpeed = 0.08;     // Degrees per frame during normal orbit
-    this.radiusSmoothing = 0.015; // How fast radius transitions (lower = smoother)
-    this.heightSmoothing = 0.015;
+    // Target state (what we animate toward)
+    this.targetRadius = 280;
+    this.targetHeight = 180;
     
-    // Ground reference
+    // Config
+    this.orbitSpeed = 6;   // Degrees per second
+    this.minClearance = 50;
+    
+    // Ground elevation
     this.groundElevation = 0;
-    this.minClearance = 60;     // Minimum meters above terrain
+    this.updateGroundElevation();
     
-    // State
+    // Animation state
     this.isRunning = false;
     this.isPaused = false;
     this.animationFrame = null;
+    this.lastFrameTime = null;
     
-    // Intro animation state
-    this.introPhase = 'pending'; // 'pending' | 'running' | 'complete'
+    // Intro state
+    this.introProgress = 0;
+    this.introDuration = 4500; // 4.5 seconds
     this.introStartTime = null;
-    this.introDuration = 4000;   // 4 seconds for elegant descent
     
-    // Track zoom for radius updates
+    // Zoom tracking
     this.lastZoom = map.getZoom();
-    
-    // Initialize
-    this.updateGroundElevation();
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // UTILITIES
+  // HELPERS
   // ─────────────────────────────────────────────────────────────────────────
-  
+
   toRad(deg) {
     return deg * Math.PI / 180;
-  }
-
-  getTerrainElevation(lng, lat) {
-    const elev = this.map.queryTerrainElevation(new maplibregl.LngLat(lng, lat));
-    return elev ?? this.groundElevation;
   }
 
   updateGroundElevation() {
@@ -109,104 +102,54 @@ class CinematicOrbit {
     if (elev != null) this.groundElevation = elev;
   }
 
-  /**
-   * Compute ideal orbit radius based on zoom level
-   * This determines how far the camera orbits from the mesh
-   */
   computeRadiusForZoom(zoom) {
-    // Tuned values: zoom 14 ≈ 280m, zoom 12 ≈ 700m, zoom 16 ≈ 110m
-    const baseRadius = 260;
-    const radius = baseRadius * Math.pow(1.45, 14 - zoom);
-    return Math.max(80, Math.min(radius, 2000));
+    const base = 250;
+    return Math.max(80, Math.min(base * Math.pow(1.5, 14 - zoom), 1800));
   }
 
-  /**
-   * Compute ideal height based on radius (maintains good viewing angle)
-   */
-  computeHeightForRadius(radius) {
-    // Maintain roughly 35-40 degree viewing angle
-    return radius * 0.7;
+  computeHeightForRadius(r) {
+    return r * 0.65;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // EASING FUNCTIONS
+  // EASING
   // ─────────────────────────────────────────────────────────────────────────
 
-  // Slow start, slow end - very smooth
-  easeInOutSine(t) {
-    return -(Math.cos(Math.PI * t) - 1) / 2;
+  easeOutCubic(t) {
+    return 1 - Math.pow(1 - t, 3);
   }
 
-  // Slow at the end - nice deceleration
-  easeOutQuart(t) {
-    return 1 - Math.pow(1 - t, 4);
-  }
-
-  // Custom bezier-like curve for spiral: slow start, accelerate, slow end
-  easeSpiral(t) {
-    // Attempt a nice S-curve that feels cinematic
-    if (t < 0.3) {
-      // Slow start (ease in)
-      return 0.3 * this.easeInOutSine(t / 0.3) * (1/0.3) * 0.15;
-    } else if (t < 0.7) {
-      // Middle section - steady progress
-      return 0.15 + (t - 0.3) * 1.75;
-    } else {
-      // Slow end (ease out)
-      const localT = (t - 0.7) / 0.3;
-      return 0.85 + 0.15 * this.easeOutQuart(localT);
-    }
+  easeInOutQuad(t) {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // CAMERA POSITIONING
+  // CAMERA
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Convert orbit parameters to camera world position
-   */
-  computeCameraPosition() {
+  applyCamera() {
     const bearingRad = this.toRad(this.bearing);
     
-    // Geographic conversion factors
+    // Geographic conversion
     const mPerDegLat = 111320;
     const mPerDegLng = mPerDegLat * Math.cos(this.toRad(this.target.lat));
     
-    // Camera offset from target (horizontal)
+    // Camera position offset
     const dLng = (Math.sin(bearingRad) * this.radius) / mPerDegLng;
     const dLat = (Math.cos(bearingRad) * this.radius) / mPerDegLat;
     
     const camLng = this.target.lng + dLng;
     const camLat = this.target.lat + dLat;
     
-    // Terrain check at camera position
-    const terrainAtCam = this.getTerrainElevation(camLng, camLat);
-    
-    // Look-at point (slightly above ground for model center)
+    // Terrain safety
+    const terrainAtCam = this.map.queryTerrainElevation(new maplibregl.LngLat(camLng, camLat)) || this.groundElevation;
     const lookAtZ = this.groundElevation + 8;
-    
-    // Camera altitude
     const desiredCamZ = this.groundElevation + this.height;
-    const safeCamZ = Math.max(desiredCamZ, terrainAtCam + this.minClearance);
+    const camZ = Math.max(desiredCamZ, terrainAtCam + this.minClearance);
     
-    return { camLng, camLat, camZ: safeCamZ, lookAtZ };
-  }
-
-  /**
-   * Apply camera to map using free camera API
-   */
-  applyCamera() {
-    const { camLng, camLat, camZ, lookAtZ } = this.computeCameraPosition();
-    
-    const camPos = maplibregl.MercatorCoordinate.fromLngLat(
-      { lng: camLng, lat: camLat },
-      camZ
-    );
-    
-    const lookAt = maplibregl.MercatorCoordinate.fromLngLat(
-      this.target,
-      lookAtZ
-    );
+    // Apply to map
+    const camPos = maplibregl.MercatorCoordinate.fromLngLat({ lng: camLng, lat: camLat }, camZ);
+    const lookAt = maplibregl.MercatorCoordinate.fromLngLat(this.target, lookAtZ);
     
     const cam = this.map.getFreeCameraOptions();
     cam.position = camPos;
@@ -215,120 +158,82 @@ class CinematicOrbit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // INTRO ANIMATION
+  // ANIMATION TICK
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * The intro: a slow, elegant spiral descent from above
-   * 
-   * Start: High above (radius=100, height=1500) looking almost straight down
-   * End: Orbit position (radius=targetRadius, height=targetHeight)
-   * 
-   * The spiral effect comes from:
-   * - Radius expanding outward
-   * - Height descending
-   * - Bearing rotating
-   * All with different easing curves to create visual interest
-   */
-  tickIntro(now) {
-    if (!this.introStartTime) {
-      this.introStartTime = now;
-      // Set starting position (high above, close to center)
-      this.radius = 50;
-      this.height = 1400;
-      this.bearing = 0;
-    }
-    
-    const elapsed = now - this.introStartTime;
-    const rawProgress = Math.min(elapsed / this.introDuration, 1);
-    
-    // Different easing for different parameters creates the spiral feel
-    const radiusProgress = this.easeOutQuart(rawProgress);      // Radius expands with deceleration
-    const heightProgress = this.easeInOutSine(rawProgress);      // Height descends smoothly
-    const bearingProgress = this.easeSpiral(rawProgress);        // Bearing has custom curve
-    
-    // Interpolate parameters
-    const startRadius = 50;
-    const startHeight = 1400;
-    
-    this.radius = startRadius + (this.targetRadius - startRadius) * radiusProgress;
-    this.height = startHeight + (this.targetHeight - startHeight) * heightProgress;
-    
-    // Rotate 1.5 full circles during intro (540 degrees) for dramatic effect
-    this.bearing = bearingProgress * 540;
-    
-    // Check if intro is complete
-    if (rawProgress >= 1) {
-      this.introPhase = 'complete';
-      this.bearing = this.bearing % 360; // Normalize bearing
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // NORMAL ORBIT
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Check if zoom changed and update target radius accordingly
-   */
-  checkZoomChange() {
-    const currentZoom = this.map.getZoom();
-    const zoomDelta = Math.abs(currentZoom - this.lastZoom);
-    
-    // Only react to meaningful zoom changes (avoid micro-adjustments)
-    if (zoomDelta > 0.1) {
-      this.lastZoom = currentZoom;
-      this.targetRadius = this.computeRadiusForZoom(currentZoom);
-      this.targetHeight = this.computeHeightForRadius(this.targetRadius);
-    }
-  }
-
-  /**
-   * Normal orbit tick: smooth rotation and radius/height transitions
-   */
-  tickOrbit() {
-    if (this.isPaused) return;
-    
-    // Check for zoom changes → update targets
-    this.checkZoomChange();
-    
-    // Smoothly interpolate radius and height toward targets
-    // This creates fluid transitions when zooming
-    const radiusDelta = this.targetRadius - this.radius;
-    const heightDelta = this.targetHeight - this.height;
-    
-    this.radius += radiusDelta * this.radiusSmoothing;
-    this.height += heightDelta * this.heightSmoothing;
-    
-    // Continuous rotation
-    this.bearing = (this.bearing + this.orbitSpeed) % 360;
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // MAIN LOOP
-  // ─────────────────────────────────────────────────────────────────────────
-
-  tick = () => {
+  tick = (timestamp) => {
     if (!this.isRunning) return;
     
-    const now = performance.now();
+    // Delta time for smooth animation regardless of frame rate
+    if (!this.lastFrameTime) this.lastFrameTime = timestamp;
+    const dt = (timestamp - this.lastFrameTime) / 1000; // seconds
+    this.lastFrameTime = timestamp;
     
-    // Periodically update ground elevation (terrain loads async)
-    if (Math.random() < 0.01) {
+    // Clamp dt to avoid huge jumps if tab was backgrounded
+    const clampedDt = Math.min(dt, 0.1);
+    
+    // ──────────────────────────────────────────────────────────────────────
+    // INTRO PHASE
+    // ──────────────────────────────────────────────────────────────────────
+    if (this.introProgress < 1) {
+      if (!this.introStartTime) {
+        this.introStartTime = timestamp;
+        // Initialize targets based on current zoom
+        const zoom = this.map.getZoom();
+        this.targetRadius = this.computeRadiusForZoom(zoom);
+        this.targetHeight = this.computeHeightForRadius(this.targetRadius);
+        this.lastZoom = zoom;
+      }
+      
+      const elapsed = timestamp - this.introStartTime;
+      this.introProgress = Math.min(elapsed / this.introDuration, 1);
+      
+      // Eased progress
+      const eased = this.easeOutCubic(this.introProgress);
+      
+      // Interpolate from start to target
+      const startRadius = 40;
+      const startHeight = 1100;
+      
+      this.radius = startRadius + (this.targetRadius - startRadius) * eased;
+      this.height = startHeight + (this.targetHeight - startHeight) * eased;
+      
+      // Rotate during intro (1 full circle = 360 degrees)
+      // Use easeInOutQuad for bearing to slow down at start and end
+      const bearingEased = this.easeInOutQuad(this.introProgress);
+      this.bearing = bearingEased * 360;
+    }
+    // ──────────────────────────────────────────────────────────────────────
+    // ORBIT PHASE
+    // ──────────────────────────────────────────────────────────────────────
+    else if (!this.isPaused) {
+      // Check zoom changes
+      const currentZoom = this.map.getZoom();
+      if (Math.abs(currentZoom - this.lastZoom) > 0.05) {
+        this.lastZoom = currentZoom;
+        this.targetRadius = this.computeRadiusForZoom(currentZoom);
+        this.targetHeight = this.computeHeightForRadius(this.targetRadius);
+      }
+      
+      // Smoothly interpolate radius/height toward targets
+      // Using exponential decay for smooth transitions
+      const smoothFactor = 1 - Math.pow(0.02, clampedDt); // ~2% per frame at 60fps
+      this.radius += (this.targetRadius - this.radius) * smoothFactor;
+      this.height += (this.targetHeight - this.height) * smoothFactor;
+      
+      // Continuous rotation (time-based, not frame-based)
+      this.bearing = (this.bearing + this.orbitSpeed * clampedDt) % 360;
+    }
+    
+    // Update terrain occasionally
+    if (Math.random() < 0.005) {
       this.updateGroundElevation();
     }
     
-    // Run appropriate phase
-    if (this.introPhase === 'running') {
-      this.tickIntro(now);
-    } else if (this.introPhase === 'complete') {
-      this.tickOrbit();
-    }
-    
-    // Always apply camera
+    // Apply camera
     this.applyCamera();
     
-    // Continue loop
+    // Next frame
     this.animationFrame = requestAnimationFrame(this.tick);
   };
 
@@ -336,26 +241,13 @@ class CinematicOrbit {
   // PUBLIC API
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Start the orbit (begins with intro animation)
-   */
   start() {
     if (this.isRunning) return;
-    
-    // Compute initial targets based on current zoom
-    const zoom = this.map.getZoom();
-    this.targetRadius = this.computeRadiusForZoom(zoom);
-    this.targetHeight = this.computeHeightForRadius(this.targetRadius);
-    this.lastZoom = zoom;
-    
     this.isRunning = true;
-    this.introPhase = 'running';
+    this.lastFrameTime = null;
     this.animationFrame = requestAnimationFrame(this.tick);
   }
 
-  /**
-   * Stop completely
-   */
   stop() {
     this.isRunning = false;
     if (this.animationFrame) {
@@ -364,35 +256,15 @@ class CinematicOrbit {
     }
   }
 
-  /**
-   * Pause rotation (still applies camera, still tracks zoom)
-   */
   pause() {
     this.isPaused = true;
   }
 
-  /**
-   * Resume rotation
-   */
   resume() {
     this.isPaused = false;
+    this.lastFrameTime = null; // Reset to avoid jump
   }
 
-  /**
-   * Skip intro and jump to orbit
-   */
-  skipIntro() {
-    if (this.introPhase === 'running') {
-      this.introPhase = 'complete';
-      this.radius = this.targetRadius;
-      this.height = this.targetHeight;
-      this.bearing = 0;
-    }
-  }
-
-  /**
-   * Clean up
-   */
   dispose() {
     this.stop();
   }
@@ -492,7 +364,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       clearTimeout(idleTimeout);
       idleTimeout = setTimeout(() => {
         orbitRef.current?.resume();
-      }, 3500);
+      }, 3000);
     };
 
     const handleInteraction = () => {
@@ -655,11 +527,11 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           mapInstance.addLayer(customLayer);
 
-          // Start orbit after terrain has time to load
+          // Start orbit after terrain loads
           setTimeout(() => {
             orbitRef.current = new CinematicOrbit(mapInstance, selectedLocation);
             orbitRef.current.start();
-          }, 600);
+          }, 500);
 
         } catch (err) {
           console.error('3D model load failed:', err);
