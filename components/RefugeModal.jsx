@@ -44,118 +44,165 @@ const loadThreeStack = async () => {
 };
 
 // ============================================================================
-// SMOOTH CAMERA ORBIT - Completely rethought
+// CINEMATIC CAMERA ORBIT SYSTEM
 // 
-// Key insight: The orbit radius should ALWAYS be derived from the current
-// zoom level, computed fresh each frame. This means zooming automatically
-// adjusts the orbit path in real-time.
-//
-// The intro animation is simply: pitch goes from 90° (top) to 55° (orbit)
-// while altitude naturally follows zoom. This creates an elegant spiral.
+// Design principles:
+// 1. Orbit RADIUS (horizontal distance from mesh) is the key parameter
+// 2. When zoom changes, we compute a NEW radius and smoothly transition to it
+// 3. The intro is a slow, curved spiral descent with proper easing
+// 4. Everything feels cinematic and intentional
 // ============================================================================
 
-class SmoothCameraOrbit {
+class CinematicOrbit {
   constructor(map, target) {
     this.map = map;
-    this.target = target;
+    this.target = target; // LngLat
     
-    // Orbital state
-    this.bearing = 0;
-    this.pitch = 88; // Start nearly top-down
-    this.currentAltitude = 1200; // Current camera altitude above target
+    // Orbit parameters
+    this.bearing = 0;           // Current rotation angle (degrees)
+    this.radius = 800;          // Horizontal distance from target (meters)
+    this.height = 400;          // Vertical height above target (meters)
+    this.targetRadius = 300;    // What we're transitioning toward
+    this.targetHeight = 200;    // What we're transitioning toward
     
-    // Targets
-    this.targetPitch = 52;
+    // Speeds and smoothing
+    this.orbitSpeed = 0.08;     // Degrees per frame during normal orbit
+    this.radiusSmoothing = 0.015; // How fast radius transitions (lower = smoother)
+    this.heightSmoothing = 0.015;
     
-    // Config
-    this.orbitSpeed = 0.15;
-    this.minTerrainClearance = 80;
+    // Ground reference
+    this.groundElevation = 0;
+    this.minClearance = 60;     // Minimum meters above terrain
     
-    // Animation state
+    // State
     this.isRunning = false;
     this.isPaused = false;
     this.animationFrame = null;
     
-    // Intro animation
-    this.introProgress = 0;
-    this.introDuration = 2200;
+    // Intro animation state
+    this.introPhase = 'pending'; // 'pending' | 'running' | 'complete'
     this.introStartTime = null;
+    this.introDuration = 4000;   // 4 seconds for elegant descent
     
-    // Cache ground elevation
-    this.groundElevation = 0;
+    // Track zoom for radius updates
+    this.lastZoom = map.getZoom();
+    
+    // Initialize
     this.updateGroundElevation();
   }
 
-  updateGroundElevation() {
-    const elev = this.map.queryTerrainElevation(this.target);
-    if (elev !== null && elev !== undefined) {
-      this.groundElevation = elev;
-    }
+  // ─────────────────────────────────────────────────────────────────────────
+  // UTILITIES
+  // ─────────────────────────────────────────────────────────────────────────
+  
+  toRad(deg) {
+    return deg * Math.PI / 180;
   }
 
-  /**
-   * Get ideal altitude based on zoom level
-   * This is called EVERY FRAME so zoom changes are instantly reflected
-   */
-  getIdealAltitudeForZoom() {
-    const zoom = this.map.getZoom();
-    // Tuned for good viewing: zoom 14 = ~320m, zoom 12 = ~900m, zoom 16 = ~120m
-    const base = 300;
-    const altitude = base * Math.pow(1.55, 14 - zoom);
-    return Math.max(100, Math.min(altitude, 3000));
-  }
-
-  /**
-   * Get terrain elevation at a point (with fallback)
-   */
-  getTerrainAt(lng, lat) {
+  getTerrainElevation(lng, lat) {
     const elev = this.map.queryTerrainElevation(new maplibregl.LngLat(lng, lat));
     return elev ?? this.groundElevation;
   }
 
+  updateGroundElevation() {
+    const elev = this.map.queryTerrainElevation(this.target);
+    if (elev != null) this.groundElevation = elev;
+  }
+
   /**
-   * Convert spherical orbit params to camera position
+   * Compute ideal orbit radius based on zoom level
+   * This determines how far the camera orbits from the mesh
    */
-  computeCameraState() {
-    const toRad = (d) => d * Math.PI / 180;
+  computeRadiusForZoom(zoom) {
+    // Tuned values: zoom 14 ≈ 280m, zoom 12 ≈ 700m, zoom 16 ≈ 110m
+    const baseRadius = 260;
+    const radius = baseRadius * Math.pow(1.45, 14 - zoom);
+    return Math.max(80, Math.min(radius, 2000));
+  }
+
+  /**
+   * Compute ideal height based on radius (maintains good viewing angle)
+   */
+  computeHeightForRadius(radius) {
+    // Maintain roughly 35-40 degree viewing angle
+    return radius * 0.7;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // EASING FUNCTIONS
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Slow start, slow end - very smooth
+  easeInOutSine(t) {
+    return -(Math.cos(Math.PI * t) - 1) / 2;
+  }
+
+  // Slow at the end - nice deceleration
+  easeOutQuart(t) {
+    return 1 - Math.pow(1 - t, 4);
+  }
+
+  // Custom bezier-like curve for spiral: slow start, accelerate, slow end
+  easeSpiral(t) {
+    // Attempt a nice S-curve that feels cinematic
+    if (t < 0.3) {
+      // Slow start (ease in)
+      return 0.3 * this.easeInOutSine(t / 0.3) * (1/0.3) * 0.15;
+    } else if (t < 0.7) {
+      // Middle section - steady progress
+      return 0.15 + (t - 0.3) * 1.75;
+    } else {
+      // Slow end (ease out)
+      const localT = (t - 0.7) / 0.3;
+      return 0.85 + 0.15 * this.easeOutQuart(localT);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CAMERA POSITIONING
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Convert orbit parameters to camera world position
+   */
+  computeCameraPosition() {
+    const bearingRad = this.toRad(this.bearing);
     
-    const pitchRad = toRad(this.pitch);
-    const bearingRad = toRad(this.bearing);
-    
-    // Horizontal distance depends on pitch and altitude
-    // At pitch=90 (top-down): horizontal = 0
-    // At pitch=45: horizontal = altitude
-    const horizontalDist = this.currentAltitude / Math.tan(pitchRad);
-    
-    // Geographic conversion
+    // Geographic conversion factors
     const mPerDegLat = 111320;
-    const mPerDegLng = mPerDegLat * Math.cos(toRad(this.target.lat));
+    const mPerDegLng = mPerDegLat * Math.cos(this.toRad(this.target.lat));
     
-    const dLng = (Math.sin(bearingRad) * horizontalDist) / mPerDegLng;
-    const dLat = (Math.cos(bearingRad) * horizontalDist) / mPerDegLat;
+    // Camera offset from target (horizontal)
+    const dLng = (Math.sin(bearingRad) * this.radius) / mPerDegLng;
+    const dLat = (Math.cos(bearingRad) * this.radius) / mPerDegLat;
     
     const camLng = this.target.lng + dLng;
     const camLat = this.target.lat + dLat;
     
-    // Terrain safety check
-    const terrainAtCam = this.getTerrainAt(camLng, camLat);
-    const lookAtZ = this.groundElevation + 12; // Model center height
-    const desiredCamZ = lookAtZ + this.currentAltitude;
-    const safeCamZ = Math.max(desiredCamZ, terrainAtCam + this.minTerrainClearance);
+    // Terrain check at camera position
+    const terrainAtCam = this.getTerrainElevation(camLng, camLat);
+    
+    // Look-at point (slightly above ground for model center)
+    const lookAtZ = this.groundElevation + 8;
+    
+    // Camera altitude
+    const desiredCamZ = this.groundElevation + this.height;
+    const safeCamZ = Math.max(desiredCamZ, terrainAtCam + this.minClearance);
     
     return { camLng, camLat, camZ: safeCamZ, lookAtZ };
   }
 
   /**
-   * Apply camera to map
+   * Apply camera to map using free camera API
    */
   applyCamera() {
-    const { camLng, camLat, camZ, lookAtZ } = this.computeCameraState();
+    const { camLng, camLat, camZ, lookAtZ } = this.computeCameraPosition();
     
     const camPos = maplibregl.MercatorCoordinate.fromLngLat(
       { lng: camLng, lat: camLat },
       camZ
     );
+    
     const lookAt = maplibregl.MercatorCoordinate.fromLngLat(
       this.target,
       lookAtZ
@@ -167,72 +214,148 @@ class SmoothCameraOrbit {
     this.map.setFreeCameraOptions(cam);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // INTRO ANIMATION
+  // ─────────────────────────────────────────────────────────────────────────
+
   /**
-   * Smooth easing
+   * The intro: a slow, elegant spiral descent from above
+   * 
+   * Start: High above (radius=100, height=1500) looking almost straight down
+   * End: Orbit position (radius=targetRadius, height=targetHeight)
+   * 
+   * The spiral effect comes from:
+   * - Radius expanding outward
+   * - Height descending
+   * - Bearing rotating
+   * All with different easing curves to create visual interest
    */
-  easeOutQuart(t) {
-    return 1 - Math.pow(1 - t, 4);
+  tickIntro(now) {
+    if (!this.introStartTime) {
+      this.introStartTime = now;
+      // Set starting position (high above, close to center)
+      this.radius = 50;
+      this.height = 1400;
+      this.bearing = 0;
+    }
+    
+    const elapsed = now - this.introStartTime;
+    const rawProgress = Math.min(elapsed / this.introDuration, 1);
+    
+    // Different easing for different parameters creates the spiral feel
+    const radiusProgress = this.easeOutQuart(rawProgress);      // Radius expands with deceleration
+    const heightProgress = this.easeInOutSine(rawProgress);      // Height descends smoothly
+    const bearingProgress = this.easeSpiral(rawProgress);        // Bearing has custom curve
+    
+    // Interpolate parameters
+    const startRadius = 50;
+    const startHeight = 1400;
+    
+    this.radius = startRadius + (this.targetRadius - startRadius) * radiusProgress;
+    this.height = startHeight + (this.targetHeight - startHeight) * heightProgress;
+    
+    // Rotate 1.5 full circles during intro (540 degrees) for dramatic effect
+    this.bearing = bearingProgress * 540;
+    
+    // Check if intro is complete
+    if (rawProgress >= 1) {
+      this.introPhase = 'complete';
+      this.bearing = this.bearing % 360; // Normalize bearing
+    }
   }
-  
-  easeInOutCubic(t) {
-    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // NORMAL ORBIT
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Check if zoom changed and update target radius accordingly
+   */
+  checkZoomChange() {
+    const currentZoom = this.map.getZoom();
+    const zoomDelta = Math.abs(currentZoom - this.lastZoom);
+    
+    // Only react to meaningful zoom changes (avoid micro-adjustments)
+    if (zoomDelta > 0.1) {
+      this.lastZoom = currentZoom;
+      this.targetRadius = this.computeRadiusForZoom(currentZoom);
+      this.targetHeight = this.computeHeightForRadius(this.targetRadius);
+    }
   }
 
   /**
-   * Main tick - runs every frame
+   * Normal orbit tick: smooth rotation and radius/height transitions
    */
+  tickOrbit() {
+    if (this.isPaused) return;
+    
+    // Check for zoom changes → update targets
+    this.checkZoomChange();
+    
+    // Smoothly interpolate radius and height toward targets
+    // This creates fluid transitions when zooming
+    const radiusDelta = this.targetRadius - this.radius;
+    const heightDelta = this.targetHeight - this.height;
+    
+    this.radius += radiusDelta * this.radiusSmoothing;
+    this.height += heightDelta * this.heightSmoothing;
+    
+    // Continuous rotation
+    this.bearing = (this.bearing + this.orbitSpeed) % 360;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MAIN LOOP
+  // ─────────────────────────────────────────────────────────────────────────
+
   tick = () => {
     if (!this.isRunning) return;
     
     const now = performance.now();
-    const idealAlt = this.getIdealAltitudeForZoom();
     
-    // Intro phase: animate pitch from top-down to orbit angle
-    if (this.introProgress < 1) {
-      if (!this.introStartTime) this.introStartTime = now;
-      
-      const elapsed = now - this.introStartTime;
-      this.introProgress = Math.min(elapsed / this.introDuration, 1);
-      const eased = this.easeOutQuart(this.introProgress);
-      
-      // Pitch: 88° -> targetPitch
-      this.pitch = 88 - (88 - this.targetPitch) * eased;
-      
-      // Altitude: start high, descend to ideal
-      const startAlt = 1400;
-      this.currentAltitude = startAlt + (idealAlt - startAlt) * eased;
-      
-      // Rotate during intro (slightly faster for drama)
-      this.bearing = (this.bearing + this.orbitSpeed * 1.5) % 360;
-    } 
-    // Normal orbit phase
-    else if (!this.isPaused) {
-      // Smoothly track ideal altitude (this makes zoom changes fluid!)
-      const altDelta = idealAlt - this.currentAltitude;
-      this.currentAltitude += altDelta * 0.08;
-      
-      // Continuous rotation
-      this.bearing = (this.bearing + this.orbitSpeed) % 360;
-      
-      // Keep pitch at target
-      this.pitch = this.targetPitch;
-    }
-    
-    // Update ground elevation periodically (terrain might load late)
-    if (Math.random() < 0.02) {
+    // Periodically update ground elevation (terrain loads async)
+    if (Math.random() < 0.01) {
       this.updateGroundElevation();
     }
     
+    // Run appropriate phase
+    if (this.introPhase === 'running') {
+      this.tickIntro(now);
+    } else if (this.introPhase === 'complete') {
+      this.tickOrbit();
+    }
+    
+    // Always apply camera
     this.applyCamera();
+    
+    // Continue loop
     this.animationFrame = requestAnimationFrame(this.tick);
   };
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // PUBLIC API
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Start the orbit (begins with intro animation)
+   */
   start() {
     if (this.isRunning) return;
+    
+    // Compute initial targets based on current zoom
+    const zoom = this.map.getZoom();
+    this.targetRadius = this.computeRadiusForZoom(zoom);
+    this.targetHeight = this.computeHeightForRadius(this.targetRadius);
+    this.lastZoom = zoom;
+    
     this.isRunning = true;
+    this.introPhase = 'running';
     this.animationFrame = requestAnimationFrame(this.tick);
   }
 
+  /**
+   * Stop completely
+   */
   stop() {
     this.isRunning = false;
     if (this.animationFrame) {
@@ -241,14 +364,35 @@ class SmoothCameraOrbit {
     }
   }
 
+  /**
+   * Pause rotation (still applies camera, still tracks zoom)
+   */
   pause() {
     this.isPaused = true;
   }
 
+  /**
+   * Resume rotation
+   */
   resume() {
     this.isPaused = false;
   }
 
+  /**
+   * Skip intro and jump to orbit
+   */
+  skipIntro() {
+    if (this.introPhase === 'running') {
+      this.introPhase = 'complete';
+      this.radius = this.targetRadius;
+      this.height = this.targetHeight;
+      this.bearing = 0;
+    }
+  }
+
+  /**
+   * Clean up
+   */
   dispose() {
     this.stop();
   }
@@ -304,11 +448,11 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     });
   };
 
-  // Mini map effect
+  // Mini map
   useEffect(() => {
-    if (!miniMapContainerRef.current) return undefined;
+    if (!miniMapContainerRef.current) return;
     const coords = refuge.geometry?.coordinates;
-    if (!coords || coords.length < 2) return undefined;
+    if (!coords || coords.length < 2) return;
 
     if (miniMapRef.current) {
       miniMapRef.current.remove();
@@ -331,26 +475,24 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     miniMapRef.current = map;
 
     return () => {
-      if (miniMapRef.current) {
-        miniMapRef.current.remove();
-        miniMapRef.current = null;
-      }
+      miniMapRef.current?.remove();
+      miniMapRef.current = null;
     };
   }, [refuge]);
 
-  // Expanded 3D map effect
+  // Expanded 3D map
   useEffect(() => {
-    if (!mapExpanded || !expandedMapRef.current) return undefined;
+    if (!mapExpanded || !expandedMapRef.current) return;
 
     let idleTimeout;
     let mapInstance;
     let selectedLocation;
 
     const resetIdleTimer = () => {
-      if (idleTimeout) clearTimeout(idleTimeout);
+      clearTimeout(idleTimeout);
       idleTimeout = setTimeout(() => {
         orbitRef.current?.resume();
-      }, 3000);
+      }, 3500);
     };
 
     const handleInteraction = () => {
@@ -382,24 +524,23 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
       expandedMapInstanceRef.current = mapInstance;
 
-      // Constrain to area
+      // Constrain bounds
       mapInstance.setMaxBounds([
-        [selectedLocation.lng - 0.03, selectedLocation.lat - 0.03],
-        [selectedLocation.lng + 0.03, selectedLocation.lat + 0.03]
+        [selectedLocation.lng - 0.04, selectedLocation.lat - 0.04],
+        [selectedLocation.lng + 0.04, selectedLocation.lat + 0.04]
       ]);
 
       // Interaction handlers
       const canvas = mapInstance.getCanvas();
-      canvas.addEventListener('mousedown', handleInteraction, { passive: true });
-      canvas.addEventListener('wheel', handleInteraction, { passive: true });
-      canvas.addEventListener('touchstart', handleInteraction, { passive: true });
+      ['mousedown', 'wheel', 'touchstart'].forEach(evt => {
+        canvas.addEventListener(evt, handleInteraction, { passive: true });
+      });
 
-      // Add other refuge markers
+      // Other refuge markers
       (refuges || []).forEach((f) => {
         const pos = f.geometry?.coordinates;
         if (!pos || pos.length < 2) return;
         if (f.properties?.id === refuge.properties?.id) return;
-        
         createRefugeMarker(f, mapInstance, undefined, { compact: true }, {}).addTo(mapInstance);
       });
 
@@ -427,7 +568,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         });
         mapInstance.setTerrain({ source: 'terrain-src', exaggeration: 1.0 });
 
-        // Load 3D model
+        // 3D Model
         try {
           const { THREE, GLTFLoader } = await loadThreeStack();
           if (!THREE || !GLTFLoader) return;
@@ -452,7 +593,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             });
           });
 
-          // Center and scale model
+          // Center and scale
           const box = new THREE.Box3().setFromObject(model);
           const center = box.getCenter(new THREE.Vector3());
           const size = new THREE.Vector3();
@@ -462,7 +603,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           model.position.set(-center.x, -box.min.y, -center.z);
           model.scale.setScalar((30 * 5) / maxDim);
 
-          // Orient model based on terrain slope
+          // Orient based on terrain slope
           const offset = 0.001;
           const getElev = (lng, lat) => mapInstance.queryTerrainElevation(new maplibregl.LngLat(lng, lat)) || 0;
           const eN = getElev(coords[0], coords[1] + offset);
@@ -514,11 +655,11 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           mapInstance.addLayer(customLayer);
 
-          // Start camera orbit after a short delay for terrain to load
+          // Start orbit after terrain has time to load
           setTimeout(() => {
-            orbitRef.current = new SmoothCameraOrbit(mapInstance, selectedLocation);
+            orbitRef.current = new CinematicOrbit(mapInstance, selectedLocation);
             orbitRef.current.start();
-          }, 400);
+          }, 600);
 
         } catch (err) {
           console.error('3D model load failed:', err);
@@ -529,15 +670,15 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     setup();
 
     return () => {
-      if (idleTimeout) clearTimeout(idleTimeout);
+      clearTimeout(idleTimeout);
       orbitRef.current?.dispose();
       orbitRef.current = null;
       
       if (mapInstance) {
         const canvas = mapInstance.getCanvas();
-        canvas.removeEventListener('mousedown', handleInteraction);
-        canvas.removeEventListener('wheel', handleInteraction);
-        canvas.removeEventListener('touchstart', handleInteraction);
+        ['mousedown', 'wheel', 'touchstart'].forEach(evt => {
+          canvas.removeEventListener(evt, handleInteraction);
+        });
         mapInstance.remove();
       }
       expandedMapInstanceRef.current = null;
@@ -558,6 +699,10 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
   const toggleOverlayLayer = (layerId) => {
     setOverlayVisibility((prev) => ({ ...prev, [layerId]: !prev[layerId] }));
   };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // RENDER
+  // ─────────────────────────────────────────────────────────────────────────
 
   return (
     <AnimatePresence>
@@ -600,36 +745,20 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           }}
         >
           {/* Header */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '1rem',
-              padding: '1.25rem 1.5rem',
-              borderBottom: '1px solid rgba(255,255,255,0.08)',
-            }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '1.25rem 1.5rem', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
             <div style={{ flex: 1 }}>
               <h2 style={{ fontSize: '2rem', margin: 0 }}>{nom}</h2>
               <div style={{ display: 'flex', gap: '1rem', color: 'var(--text-secondary)', flexWrap: 'wrap', marginTop: '0.35rem' }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <MapPin size={18} /> {coord.alt}m
-                </span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Bed size={18} /> {placeCount} places
-                </span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <TreePine size={18} /> {type?.valeur}
-                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}><MapPin size={18} /> {coord.alt}m</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}><Bed size={18} /> {placeCount} places</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}><TreePine size={18} /> {type?.valeur}</span>
               </div>
               {massifBreadcrumb && (
                 <div style={{ marginTop: '0.45rem', display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Massif</span>
                   {massifBreadcrumb.map((step, idx) => (
                     <React.Fragment key={`${step}-${idx}`}>
-                      <span style={{ padding: '0.25rem 0.6rem', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)' }}>
-                        {step}
-                      </span>
+                      <span style={{ padding: '0.25rem 0.6rem', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)' }}>{step}</span>
                       {idx < massifBreadcrumb.length - 1 && <ChevronRight size={16} style={{ opacity: 0.6 }} />}
                     </React.Fragment>
                   ))}
@@ -637,27 +766,17 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <button onClick={onToggleStar} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: isStarred ? 'var(--warning)' : 'var(--text-secondary)', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }} title={isStarred ? "Retirer des favoris" : "Ajouter aux favoris"}>
-                <Star size={20} fill={isStarred ? 'currentColor' : 'none'} />
-              </button>
-              <button onClick={onToggleLike} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: isLiked ? '#ef4444' : 'var(--text-secondary)', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }} title={isLiked ? "Je n'aime plus" : "J'aime"}>
-                <Heart size={20} fill={isLiked ? 'currentColor' : 'none'} />
-              </button>
-              <button onClick={onToggleDislike} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: isDisliked ? '#ef4444' : 'var(--text-secondary)', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }} title={isDisliked ? "Retirer de la liste interdite" : "Ajouter à la liste interdite"}>
-                <Ban size={20} />
-              </button>
-              <a href={lien} target="_blank" rel="noopener noreferrer" className="btn" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem', textDecoration: 'none', padding: '0.55rem 0.9rem', background: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)' }}>
-                Voir sur refuges.info <ExternalLink size={16} />
-              </a>
-              <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-                <X size={22} />
-              </button>
+              <button onClick={onToggleStar} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: isStarred ? 'var(--warning)' : 'var(--text-secondary)', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><Star size={20} fill={isStarred ? 'currentColor' : 'none'} /></button>
+              <button onClick={onToggleLike} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: isLiked ? '#ef4444' : 'var(--text-secondary)', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><Heart size={20} fill={isLiked ? 'currentColor' : 'none'} /></button>
+              <button onClick={onToggleDislike} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: isDisliked ? '#ef4444' : 'var(--text-secondary)', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><Ban size={20} /></button>
+              <a href={lien} target="_blank" rel="noopener noreferrer" className="btn" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', textDecoration: 'none', padding: '0.55rem 0.9rem', background: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)' }}>Voir sur refuges.info <ExternalLink size={16} /></a>
+              <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><X size={22} /></button>
             </div>
           </div>
 
           {/* Content */}
           <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '1.25rem', padding: '1.25rem', overflow: 'hidden', minHeight: 0 }}>
-            {/* Left column */}
+            {/* Left */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', overflowY: 'auto', paddingRight: '0.25rem' }}>
               <div className="glass-panel" style={{ padding: '1.25rem', background: 'rgba(255,255,255,0.03)' }}>
                 <h4 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Equipements</h4>
@@ -697,21 +816,18 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               </div>
             </div>
 
-            {/* Right column */}
+            {/* Right */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
-              <div
-                style={{ height: '240px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', position: 'relative', cursor: mainPhoto ? 'pointer' : 'default', overflow: 'hidden', background: mainPhoto ? 'var(--card-bg)' : 'linear-gradient(45deg, var(--bg-color), var(--card-bg))' }}
-                onClick={() => mainPhoto && openLightbox(photos.length - 1)}
-              >
-                {mainPhoto && <img src={mainPhoto} alt="Vue principale" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />}
+              <div onClick={() => mainPhoto && openLightbox(photos.length - 1)} style={{ height: '240px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', cursor: mainPhoto ? 'pointer' : 'default', overflow: 'hidden', background: mainPhoto ? 'var(--card-bg)' : 'linear-gradient(45deg, var(--bg-color), var(--card-bg))' }}>
+                {mainPhoto && <img src={mainPhoto} alt="Vue principale" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
               </div>
 
               {photos?.length > 1 && (
                 <div style={{ overflowY: 'auto', paddingRight: '0.3rem' }}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '0.75rem' }}>
                     {photos.slice(1).map((photo, idx) => (
-                      <div key={idx} className="photo-thumb" onClick={() => openLightbox(idx + 1)} style={{ overflow: 'hidden', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)' }}>
-                        <img src={photo} alt={`Vue ${idx + 2}`} style={{ width: '100%', height: '110px', objectFit: 'cover', display: 'block' }} />
+                      <div key={idx} className="photo-thumb" onClick={() => openLightbox(idx + 1)} style={{ overflow: 'hidden', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', cursor: 'pointer' }}>
+                        <img src={photo} alt={`Vue ${idx + 2}`} style={{ width: '100%', height: '110px', objectFit: 'cover' }} />
                       </div>
                     ))}
                   </div>
@@ -720,35 +836,35 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
               <div className="glass-panel" style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}><MapPin size={18} /><strong>Localisation</strong></div>
-                <div ref={miniMapContainerRef} style={{ height: '200px', borderRadius: '12px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer' }} onClick={() => setMapExpanded(true)} />
+                <div ref={miniMapContainerRef} onClick={() => setMapExpanded(true)} style={{ height: '200px', borderRadius: '12px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer' }} />
               </div>
             </div>
           </div>
 
           {/* Lightbox */}
           {lightboxIndex !== null && photos?.length > 0 && (
-            <div onClick={closeLightbox} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+            <div onClick={closeLightbox} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
               <button onClick={(e) => { e.stopPropagation(); closeLightbox(); }} style={{ position: 'absolute', top: 16, right: 16, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.3)', color: 'white', borderRadius: '50%', width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><X size={20} /></button>
               <button onClick={(e) => { e.stopPropagation(); gotoPhoto(-1); }} style={{ position: 'absolute', left: 20, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.3)', color: 'white', borderRadius: '50%', width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><ChevronLeft size={22} /></button>
               <button onClick={(e) => { e.stopPropagation(); gotoPhoto(1); }} style={{ position: 'absolute', right: 20, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.3)', color: 'white', borderRadius: '50%', width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><ChevronRight size={22} /></button>
-              <img src={photos[lightboxIndex]} alt={`Photo ${lightboxIndex + 1}`} style={{ maxHeight: '90vh', maxWidth: '90vw', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.2)', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }} onClick={(e) => e.stopPropagation()} />
+              <img src={photos[lightboxIndex]} alt={`Photo ${lightboxIndex + 1}`} onClick={(e) => e.stopPropagation()} style={{ maxHeight: '90vh', maxWidth: '90vw', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.2)', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }} />
             </div>
           )}
 
           {/* Expanded Map */}
           {mapExpanded && (
-            <div onClick={() => setMapExpanded(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 1250, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1.5rem' }}>
+            <div onClick={() => setMapExpanded(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 1250, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1.5rem' }}>
               <div onClick={(e) => e.stopPropagation()} style={{ position: 'relative', width: 'min(1100px, 95vw)', height: 'min(750px, 85vh)', background: 'var(--card-bg)', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.12)', overflow: 'hidden', boxShadow: '0 24px 80px rgba(0,0,0,0.45)' }}>
                 <button onClick={() => setMapExpanded(false)} style={{ position: 'absolute', top: 14, right: 14, background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.25)', borderRadius: '50%', width: 42, height: 42, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', cursor: 'pointer', zIndex: 2 }}><X size={20} /></button>
                 
-                <div style={{ position: 'absolute', top: 16, left: 16, zIndex: 2, display: 'flex', flexDirection: 'column', gap: '0.5rem' }} onClick={(e) => e.stopPropagation()}>
+                <div onClick={(e) => e.stopPropagation()} style={{ position: 'absolute', top: 16, left: 16, zIndex: 2, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   <button onClick={() => setShowLayerMenu((o) => !o)} style={{ width: 44, height: 44, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.25)', background: 'rgba(0,0,0,0.5)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><Layers size={18} /></button>
                   {showLayerMenu && (
                     <div style={{ background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '12px', padding: '0.75rem', backdropFilter: 'blur(4px)', minWidth: '260px' }}>
                       <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Fonds supplémentaires</div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
                         {OVERLAY_LAYERS.filter((l) => !l.alwaysOn).map((layer) => (
-                          <label key={layer.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: 'var(--text-primary)' }}>
+                          <label key={layer.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: 'var(--text-primary)', cursor: 'pointer' }}>
                             <input type="checkbox" checked={!!overlayVisibility[layer.id]} onChange={() => toggleOverlayLayer(layer.id)} />
                             <span>{layer.label}</span>
                           </label>
