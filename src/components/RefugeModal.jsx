@@ -132,6 +132,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     let idleTimeout;
     let mapInstance;
     let selectedLocation;
+    let refreshOrbitPath = () => {};
 
     const userInteractionEvents = [
       'dragstart',
@@ -151,6 +152,35 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         cancelAnimationFrame(animationFrame);
         animationFrame = null;
       }
+    };
+
+    const toRadians = (deg) => (deg * Math.PI) / 180;
+
+    const getCurrentCameraPosition = () => {
+      if (!mapInstance) return null;
+
+      try {
+        const freeCamera = mapInstance.getFreeCameraOptions?.();
+        const position = freeCamera?.position;
+
+        if (position?.toLngLat && position?.toAltitude) {
+          const lngLat = position.toLngLat();
+          const altitude = position.toAltitude();
+
+          if (lngLat && Number.isFinite(altitude)) {
+            return { lng: lngLat.lng, lat: lngLat.lat, altitude };
+          }
+        }
+      } catch (error) {
+        console.warn('Unable to read free camera options', error);
+      }
+
+      const center = mapInstance.getCenter();
+      const centerElevation = mapInstance.queryTerrainElevation(center) || 0;
+      const zoom = mapInstance.getZoom();
+      const inferredAltitude = centerElevation + Math.max(120, (15 - zoom) * 180);
+
+      return { lng: center.lng, lat: center.lat, altitude: inferredAltitude };
     };
 
     const ORBIT_DURATION = 30000; // 30s full orbit
@@ -208,15 +238,16 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
     const startOrbit = () => {
       stopOrbit();
+      refreshOrbitPath();
       const now = performance.now();
       orbitStartRef.current = now - orbitProgressRef.current * ORBIT_DURATION;
       animationFrame = requestAnimationFrame(orbit);
     };
 
-    const resetIdleTimer = () => {
-      if (idleTimeout) clearTimeout(idleTimeout);
-      idleTimeout = setTimeout(startOrbit, 5000);
-    };
+      const resetIdleTimer = () => {
+        if (idleTimeout) clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(startOrbit, 5000);
+      };
 
     const handleUserInteraction = (event) => {
       if (!event?.originalEvent) return;
@@ -451,7 +482,18 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             return { deltaLng, deltaLat };
           };
 
-          const buildOrbitPath = () => {
+          const haversineDistance = (a, b) => {
+            const lat1 = toRadians(a.lat);
+            const lat2 = toRadians(b.lat);
+            const dLat = lat2 - lat1;
+            const dLng = toRadians(b.lng - a.lng);
+            const h =
+              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+            return 2 * 6371000 * Math.asin(Math.min(1, Math.sqrt(h)));
+          };
+
+          const buildOrbitPath = (initialPosition) => {
             const centerElevation = mapInstance.queryTerrainElevation(selectedLocation) || 0;
             const locationCenter = selectedLocation;
 
@@ -461,39 +503,65 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               altitude: centerElevation + 15,
             };
 
-            const radiusMeters = 800;
+            const distanceFromCamera = initialPosition
+              ? haversineDistance(initialPosition, locationCenter)
+              : null;
+            const radiusMeters = Math.min(4000, Math.max(250, distanceFromCamera || 800));
             const samples = 72;
-            const ringSamples = [];
+            orbitPathRef.current = new Array(samples);
+
+            const baseAngle = (() => {
+              if (!initialPosition) return 0;
+
+              const dLng = (initialPosition.lng - locationCenter.lng) * Math.cos(toRadians(locationCenter.lat));
+              const dLat = initialPosition.lat - locationCenter.lat;
+
+              return Math.atan2(dLat, dLng);
+            })();
 
             for (let i = 0; i < samples; i++) {
-              const theta = (i / samples) * Math.PI * 2;
+              const theta = baseAngle + (i / samples) * Math.PI * 2;
               const { deltaLng, deltaLat } = metersToDegrees(radiusMeters, locationCenter.lat, theta);
               const lng = locationCenter.lng + deltaLng;
               const lat = locationCenter.lat + deltaLat;
               const elevation =
                 mapInstance.queryTerrainElevation(new maplibregl.LngLat(lng, lat)) ?? centerElevation;
 
-              ringSamples.push({ lng, lat, elevation });
+              const altitude =
+                i === 0 && initialPosition?.altitude !== undefined
+                  ? initialPosition.altitude
+                  : (elevation ?? centerElevation) + Math.max(120, (elevation ?? centerElevation) - centerElevation + 120);
+
+              orbitPathRef.current[i] = { lng, lat, altitude };
             }
-
-            const maxElevation = ringSamples.reduce(
-              (acc, sample) => Math.max(acc, sample.elevation ?? centerElevation),
-              centerElevation
-            );
-
-            const clearance = Math.max(120, maxElevation - centerElevation + 120);
-
-            orbitPathRef.current = ringSamples.map((sample) => ({
-              lng: sample.lng,
-              lat: sample.lat,
-              altitude: (sample.elevation ?? centerElevation) + clearance,
-            }));
 
             orbitProgressRef.current = 0;
             orbitStartRef.current = 0;
           };
 
-          buildOrbitPath();
+          refreshOrbitPath = () => buildOrbitPath(getCurrentCameraPosition());
+          refreshOrbitPath();
+
+          const moveToOrbitStart = () => {
+            const path = orbitPathRef.current;
+            const target = orbitTargetRef.current;
+
+            if (!path?.length || !target) return;
+
+            const start = path[0];
+            const cameraOptions = mapInstance.calculateCameraOptionsFromTo(
+              start,
+              start.altitude,
+              target,
+              target.altitude
+            );
+
+            if (cameraOptions) {
+              mapInstance.jumpTo(cameraOptions);
+            }
+          };
+
+          moveToOrbitStart();
 
           model.rotation.y = rotation;
 
@@ -556,24 +624,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           mapInstance.addLayer(customLayer);
 
-          // Delay the fly-in to ensure top-down view is established and terrain loads
-          setTimeout(() => {
-            mapInstance.flyTo({
-              center: selectedLocation,
-              pitch: pitch,
-              zoom: zoom,
-              bearing: 0,
-              speed: 0.5, // Slower, smoother fly
-              curve: 1.2,
-              offset: [0, offsetY],
-              essential: true
-            });
-
-            mapInstance.once('moveend', () => {
-              startOrbit();
-              resetIdleTimer();
-            });
-          }, 600);
+          startOrbit();
+          resetIdleTimer();
         } catch (error) {
           console.error('Failed to load 3D model', error);
         }
