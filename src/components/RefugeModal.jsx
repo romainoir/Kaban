@@ -176,6 +176,10 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       }
 
       const center = mapInstance.getCenter();
+      if (!center || !Number.isFinite(center.lng) || !Number.isFinite(center.lat)) {
+        return null;
+      }
+
       const centerElevation = mapInstance.queryTerrainElevation(center) || 0;
       const zoom = mapInstance.getZoom();
       const inferredAltitude = centerElevation + Math.max(120, (15 - zoom) * 180);
