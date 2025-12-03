@@ -437,6 +437,9 @@ const GeoFilterMap = ({
     mapRef.current = map;
 
     const handleMoveEnd = () => {
+      // Ignore stale events that might fire after the map instance was torn down
+      if (mapRef.current !== map) return;
+
       const b = map.getBounds();
       const center = map.getCenter();
 
@@ -657,6 +660,9 @@ const GeoFilterMap = ({
   // Watch for initialView changes (e.g., from search) and update map
   useEffect(() => {
     if (!mapRef.current || !initialView) return;
+    if (!Array.isArray(initialView.center) || initialView.center.length < 2) return;
+    if (!Number.isFinite(initialView.center[0]) || !Number.isFinite(initialView.center[1])) return;
+    if (!Number.isFinite(initialView.zoom)) return;
 
     const map = mapRef.current;
     const currentCenter = map.getCenter();
