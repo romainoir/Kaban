@@ -44,50 +44,92 @@ const loadThreeStack = async () => {
 };
 
 // ============================================================================
-// ORBIT CAMERA CONTROLLER
+// ENHANCED ORBIT CAMERA CONTROLLER
 // 
-// Design:
-// - Uses map.easeTo for intro (native, smooth, terrain-aware)
-// - Seamlessly takes over with free camera at exact end position
-// - Robust terrain sampling with fallbacks
-// - Clean state management
+// Features:
+// - Smooth intro using native map.easeTo
+// - Seamless handoff to free camera orbit
+// - Dynamic radius based on zoom level
+// - Smooth radius transitions when zooming
+// - Terrain-aware camera positioning
+// - Pause/resume with smooth transitions
+// - Configurable speed and direction
 // ============================================================================
 
 class OrbitController {
-  constructor(map, targetLngLat) {
+  constructor(map, targetLngLat, options = {}) {
     this.map = map;
     this.target = targetLngLat;
     this.disposed = false;
+    
+    // Configuration with defaults
+    this.config = {
+      orbitSpeed: options.orbitSpeed ?? 10,           // degrees per second
+      direction: options.direction ?? 1,              // 1 = clockwise, -1 = counter-clockwise
+      minClearance: options.minClearance ?? 100,      // min altitude above terrain (meters)
+      introDuration: options.introDuration ?? 3000,   // intro animation duration (ms)
+      introZoom: options.introZoom ?? 14.5,
+      introPitch: options.introPitch ?? 50,
+      radiusSmoothFactor: options.radiusSmoothFactor ?? 2, // higher = faster radius transitions
+    };
     
     // State
     this.phase = 'idle'; // 'idle' | 'intro' | 'orbit'
     this.bearing = 0;
     this.radius = 300;
+    this.targetRadius = 300;
     this.height = 200;
     this.groundElevation = 0;
     
-    // Animation
+    // Terrain cache for performance
+    this.terrainCache = new Map();
+    this.terrainCacheTTL = 500; // ms
+    
+    // Animation state
     this.animationFrame = null;
     this.lastTimestamp = null;
     this.isPaused = false;
     
-    // Config
-    this.orbitSpeed = 10; // degrees per second
-    this.minClearance = 100; // minimum altitude above terrain
+    // Zoom tracking for smooth transitions
+    this.lastZoom = map.getZoom();
     
     // Bind methods
     this.tick = this.tick.bind(this);
+    this.onZoomEnd = this.onZoomEnd.bind(this);
   }
 
   // ───────────────────────────────────────────────────────────────────────
-  // TERRAIN
+  // TERRAIN HELPERS
   // ───────────────────────────────────────────────────────────────────────
+
+  getCacheKey(lng, lat) {
+    return `${lng.toFixed(4)},${lat.toFixed(4)}`;
+  }
 
   queryElevation(lng, lat) {
     if (this.disposed || !this.map) return this.groundElevation;
+    
+    // Check cache first
+    const key = this.getCacheKey(lng, lat);
+    const cached = this.terrainCache.get(key);
+    if (cached && Date.now() - cached.time < this.terrainCacheTTL) {
+      return cached.value;
+    }
+    
     try {
       const elev = this.map.queryTerrainElevation(new maplibregl.LngLat(lng, lat));
-      return (elev != null && !isNaN(elev)) ? elev : this.groundElevation;
+      const value = (elev != null && !isNaN(elev)) ? elev : this.groundElevation;
+      
+      // Cache the result
+      this.terrainCache.set(key, { value, time: Date.now() });
+      
+      // Limit cache size
+      if (this.terrainCache.size > 50) {
+        const firstKey = this.terrainCache.keys().next().value;
+        this.terrainCache.delete(firstKey);
+      }
+      
+      return value;
     } catch {
       return this.groundElevation;
     }
@@ -108,16 +150,36 @@ class OrbitController {
       await new Promise(r => setTimeout(r, 100));
     }
     
-    // Fallback: use coord altitude if available
     this.groundElevation = 0;
     return false;
   }
 
   refreshGroundElevation() {
+    // Clear cache for target to get fresh value
+    const key = this.getCacheKey(this.target.lng, this.target.lat);
+    this.terrainCache.delete(key);
+    
     const elev = this.queryElevation(this.target.lng, this.target.lat);
     if (elev > 0) {
       this.groundElevation = elev;
     }
+  }
+
+  /**
+   * Sample terrain along the orbit path to find highest point
+   */
+  sampleOrbitTerrain() {
+    const samples = 8;
+    let maxElev = this.groundElevation;
+    
+    for (let i = 0; i < samples; i++) {
+      const angle = (i / samples) * 360;
+      const pos = this.getPositionAtBearing(angle);
+      const elev = this.queryElevation(pos.lng, pos.lat);
+      maxElev = Math.max(maxElev, elev);
+    }
+    
+    return maxElev;
   }
 
   // ───────────────────────────────────────────────────────────────────────
@@ -138,36 +200,39 @@ class OrbitController {
     return r * 0.6;
   }
 
+  getPositionAtBearing(bearing) {
+    const bearingRad = this.toRad(bearing);
+    const mPerDegLat = 111320;
+    const mPerDegLng = mPerDegLat * Math.cos(this.toRad(this.target.lat));
+    
+    const dLng = (Math.sin(bearingRad) * this.radius) / mPerDegLng;
+    const dLat = (Math.cos(bearingRad) * this.radius) / mPerDegLat;
+    
+    return {
+      lng: this.target.lng + dLng,
+      lat: this.target.lat + dLat
+    };
+  }
+
   // ───────────────────────────────────────────────────────────────────────
   // CAMERA APPLICATION
   // ───────────────────────────────────────────────────────────────────────
 
   computeCameraPosition() {
-    const bearingRad = this.toRad(this.bearing);
-    
-    // Meters to degrees
-    const mPerDegLat = 111320;
-    const mPerDegLng = mPerDegLat * Math.cos(this.toRad(this.target.lat));
-    
-    // Camera offset from target
-    const dLng = (Math.sin(bearingRad) * this.radius) / mPerDegLng;
-    const dLat = (Math.cos(bearingRad) * this.radius) / mPerDegLat;
-    
-    const camLng = this.target.lng + dLng;
-    const camLat = this.target.lat + dLat;
+    const pos = this.getPositionAtBearing(this.bearing);
     
     // Terrain at camera position
-    const terrainAtCam = this.queryElevation(camLng, camLat);
+    const terrainAtCam = this.queryElevation(pos.lng, pos.lat);
     
-    // Look-at point (slightly above ground for model)
+    // Look-at point (slightly above ground for model center)
     const lookAtZ = this.groundElevation + 10;
     
-    // Camera altitude - always above terrain
+    // Camera altitude - ensure above terrain with clearance
     const desiredZ = this.groundElevation + this.height;
-    const minZ = Math.max(terrainAtCam, this.groundElevation) + this.minClearance;
+    const minZ = Math.max(terrainAtCam, this.groundElevation) + this.config.minClearance;
     const camZ = Math.max(desiredZ, minZ);
     
-    return { camLng, camLat, camZ, lookAtZ };
+    return { camLng: pos.lng, camLat: pos.lat, camZ, lookAtZ };
   }
 
   applyFreeCamera() {
@@ -190,7 +255,21 @@ class OrbitController {
       camera.lookAtPoint(lookAt);
       this.map.setFreeCameraOptions(camera);
     } catch (e) {
-      console.warn('Camera apply failed:', e);
+      // Map might be disposed
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // ZOOM HANDLING
+  // ───────────────────────────────────────────────────────────────────────
+
+  onZoomEnd() {
+    if (this.disposed || this.phase !== 'orbit') return;
+    
+    const newZoom = this.map.getZoom();
+    if (Math.abs(newZoom - this.lastZoom) > 0.1) {
+      this.lastZoom = newZoom;
+      this.targetRadius = this.radiusForZoom(newZoom);
     }
   }
 
@@ -201,7 +280,7 @@ class OrbitController {
   tick(timestamp) {
     if (this.disposed || this.phase !== 'orbit') return;
     
-    // Delta time
+    // Delta time calculation
     if (this.lastTimestamp === null) this.lastTimestamp = timestamp;
     const dt = Math.min((timestamp - this.lastTimestamp) / 1000, 0.1);
     this.lastTimestamp = timestamp;
@@ -211,21 +290,21 @@ class OrbitController {
       this.refreshGroundElevation();
     }
     
-    // Update radius from zoom
-    const zoom = this.map.getZoom();
-    const targetRadius = this.radiusForZoom(zoom);
-    this.radius += (targetRadius - this.radius) * Math.min(dt * 2, 0.1);
+    // Smooth radius transition toward target
+    const radiusDiff = this.targetRadius - this.radius;
+    this.radius += radiusDiff * Math.min(dt * this.config.radiusSmoothFactor, 0.15);
     this.height = this.heightForRadius(this.radius);
     
     // Rotate if not paused
     if (!this.isPaused) {
-      this.bearing = (this.bearing + this.orbitSpeed * dt) % 360;
+      const rotation = this.config.orbitSpeed * this.config.direction * dt;
+      this.bearing = (this.bearing + rotation + 360) % 360;
     }
     
     // Apply camera
     this.applyFreeCamera();
     
-    // Continue
+    // Continue animation loop
     this.animationFrame = requestAnimationFrame(this.tick);
   }
 
@@ -238,53 +317,59 @@ class OrbitController {
     
     this.phase = 'intro';
     
-    // Wait for terrain data
+    // Wait for terrain to be ready
     await this.waitForTerrain();
     if (this.disposed) return;
     
-    // Get current map state as starting point
+    // Get current map state
     const startBearing = this.map.getBearing();
     const startZoom = this.map.getZoom();
     
-    // Calculate where we want to end up
-    const endBearing = startBearing + 45; // Rotate 45 degrees during intro
-    const endZoom = 14.5;
-    const endPitch = 50;
+    // Calculate intro end state
+    const endBearing = startBearing + 60; // Rotate during intro
+    const endZoom = this.config.introZoom;
+    const endPitch = this.config.introPitch;
     
-    // Initialize orbit params
+    // Initialize orbit parameters
     this.bearing = endBearing;
-    this.radius = this.radiusForZoom(endZoom);
+    this.targetRadius = this.radiusForZoom(endZoom);
+    this.radius = this.targetRadius;
     this.height = this.heightForRadius(this.radius);
+    this.lastZoom = endZoom;
     
-    // Use map.easeTo for smooth intro with terrain handling
+    // Use native map animation for intro
     this.map.easeTo({
       center: this.target,
       zoom: endZoom,
       pitch: endPitch,
       bearing: endBearing,
-      duration: 3000,
+      duration: this.config.introDuration,
       easing: (t) => {
-        // Smooth ease-out curve
-        return 1 - Math.pow(1 - t, 3);
+        // Custom easing: slow start, smooth end
+        return t < 0.5 
+          ? 2 * t * t 
+          : 1 - Math.pow(-2 * t + 2, 2) / 2;
       }
     });
     
-    // When intro finishes, start orbit
+    // Start orbit when intro finishes
     const onMoveEnd = () => {
       if (this.disposed) return;
       this.map.off('moveend', onMoveEnd);
       
-      // Small delay to ensure everything settled
       setTimeout(() => {
         if (this.disposed) return;
         
-        // Refresh terrain one more time
-        this.refreshGroundElevation();
-        
-        // Get the actual bearing the map ended at
+        // Get final bearing from map
         this.bearing = this.map.getBearing();
         
-        // Start orbit loop
+        // Refresh terrain
+        this.refreshGroundElevation();
+        
+        // Listen for zoom changes
+        this.map.on('zoomend', this.onZoomEnd);
+        
+        // Start orbit
         this.phase = 'orbit';
         this.lastTimestamp = null;
         this.animationFrame = requestAnimationFrame(this.tick);
@@ -300,7 +385,51 @@ class OrbitController {
 
   resume() {
     this.isPaused = false;
-    this.lastTimestamp = null; // Prevent jump
+    this.lastTimestamp = null; // Prevent time jump
+  }
+
+  /**
+   * Set orbit speed (degrees per second)
+   */
+  setSpeed(speed) {
+    this.config.orbitSpeed = speed;
+  }
+
+  /**
+   * Set orbit direction (1 = clockwise, -1 = counter-clockwise)
+   */
+  setDirection(dir) {
+    this.config.direction = dir > 0 ? 1 : -1;
+  }
+
+  /**
+   * Reverse orbit direction
+   */
+  reverseDirection() {
+    this.config.direction *= -1;
+  }
+
+  /**
+   * Jump to specific bearing
+   */
+  setBearing(bearing) {
+    this.bearing = ((bearing % 360) + 360) % 360;
+  }
+
+  /**
+   * Get current state
+   */
+  getState() {
+    return {
+      phase: this.phase,
+      bearing: this.bearing,
+      radius: this.radius,
+      height: this.height,
+      groundElevation: this.groundElevation,
+      isPaused: this.isPaused,
+      speed: this.config.orbitSpeed,
+      direction: this.config.direction
+    };
   }
 
   dispose() {
@@ -311,6 +440,12 @@ class OrbitController {
       cancelAnimationFrame(this.animationFrame);
       this.animationFrame = null;
     }
+    
+    if (this.map) {
+      this.map.off('zoomend', this.onZoomEnd);
+    }
+    
+    this.terrainCache.clear();
   }
 }
 
@@ -420,13 +555,13 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       const coords = refuge.geometry?.coordinates || [6.4, 45.2];
       const targetLocation = new maplibregl.LngLat(coords[0], coords[1]);
 
-      // Create map starting from top-down view
+      // Create map - start zoomed out with flat view
       mapInstance = new maplibregl.Map({
         container: expandedMapRef.current,
         style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
         center: coords,
-        zoom: 12,  // Start zoomed out
-        pitch: 0,  // Start flat
+        zoom: 12,
+        pitch: 0,
         bearing: 0,
         attributionControl: true,
         minZoom: 11,
@@ -464,7 +599,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       mapInstance.on('load', async () => {
         if (isCleanedUp) return;
 
-        // Hillshade
+        // Hillshade layer
         mapInstance.addSource('hillshade-src', {
           type: 'raster-dem',
           url: 'https://tiles.mapterhorn.com/tilejson.json',
@@ -479,7 +614,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
         applyOverlayLayers(mapInstance, overlayVisibilityRef.current);
 
-        // Terrain (required for elevation queries)
+        // Terrain for elevation queries
         mapInstance.addSource('terrain-src', {
           type: 'raster-dem',
           url: 'https://tiles.mapterhorn.com/tilejson.json',
@@ -508,7 +643,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             return;
           }
 
-          // Fix materials
+          // Fix materials for proper color rendering
           model.traverse((child) => {
             if (!child.isMesh) return;
             const mats = Array.isArray(child.material) ? child.material : [child.material];
@@ -521,7 +656,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             });
           });
 
-          // Center and scale
+          // Center and scale model
           const box = new THREE.Box3().setFromObject(model);
           const center = box.getCenter(new THREE.Vector3());
           const size = new THREE.Vector3();
@@ -531,7 +666,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           model.position.set(-center.x, -box.min.y, -center.z);
           model.scale.setScalar((30 * 5) / maxDim);
 
-          // Orient based on terrain slope (wait a bit for terrain)
+          // Orient based on terrain slope (after terrain loads)
           setTimeout(() => {
             if (isCleanedUp || !mapInstance) return;
             
@@ -553,7 +688,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             }
           }, 500);
 
-          // Custom 3D layer
+          // Custom WebGL layer for 3D model
           const customLayer = {
             id: 'refuge-3d',
             type: 'custom',
@@ -602,7 +737,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           mapInstance.addLayer(customLayer);
           
-          // Start orbit after model is added
+          // Start orbit after model is ready
           startOrbit();
 
         } catch (err) {
@@ -614,8 +749,17 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
       function startOrbit() {
         if (isCleanedUp || !mapInstance) return;
         
-        // Create and start orbit controller
-        orbitRef.current = new OrbitController(mapInstance, targetLocation);
+        // Create orbit controller with options
+        orbitRef.current = new OrbitController(mapInstance, targetLocation, {
+          orbitSpeed: 10,
+          direction: 1,
+          minClearance: 100,
+          introDuration: 3000,
+          introZoom: 14.5,
+          introPitch: 50,
+          radiusSmoothFactor: 2,
+        });
+        
         orbitRef.current.start();
       }
     };
@@ -734,7 +878,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           {/* Content */}
           <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '1.25rem', padding: '1.25rem', overflow: 'hidden', minHeight: 0 }}>
-            {/* Left */}
+            {/* Left column */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', overflowY: 'auto', paddingRight: '0.25rem' }}>
               <div className="glass-panel" style={{ padding: '1.25rem', background: 'rgba(255,255,255,0.03)' }}>
                 <h4 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Equipements</h4>
@@ -774,7 +918,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               </div>
             </div>
 
-            {/* Right */}
+            {/* Right column */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
               <div onClick={() => mainPhoto && openLightbox(photos.length - 1)} style={{ height: '240px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', cursor: mainPhoto ? 'pointer' : 'default', overflow: 'hidden', background: mainPhoto ? 'var(--card-bg)' : 'linear-gradient(45deg, var(--bg-color), var(--card-bg))' }}>
                 {mainPhoto && <img src={mainPhoto} alt="Vue principale" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
