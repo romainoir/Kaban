@@ -438,10 +438,13 @@ const GeoFilterMap = ({
 
     const handleMoveEnd = () => {
       const b = map.getBounds();
+      const center = map.getCenter();
+
+      if (!center) return;
+
       const bounds = { north: b.getNorth(), south: b.getSouth(), east: b.getEast(), west: b.getWest() };
       setLiveBounds(bounds);
-      const c = map.getCenter();
-      onViewChange({ center: [c.lng, c.lat], zoom: map.getZoom() });
+      onViewChange({ center: [center.lng, center.lat], zoom: map.getZoom() });
     };
 
     let syncTimeout;
@@ -658,6 +661,8 @@ const GeoFilterMap = ({
     const map = mapRef.current;
     const currentCenter = map.getCenter();
     const currentZoom = map.getZoom();
+
+    if (!currentCenter) return;
 
     // Check if view has changed significantly (avoid infinite loops)
     const centerChanged =
