@@ -44,357 +44,218 @@ const loadThreeStack = async () => {
 };
 
 // ============================================================================
-// REFACTORED CAMERA ORBIT SYSTEM
+// SMOOTH CAMERA ORBIT - Completely rethought
+// 
+// Key insight: The orbit radius should ALWAYS be derived from the current
+// zoom level, computed fresh each frame. This means zooming automatically
+// adjusts the orbit path in real-time.
+//
+// The intro animation is simply: pitch goes from 90° (top) to 55° (orbit)
+// while altitude naturally follows zoom. This creates an elegant spiral.
 // ============================================================================
 
-/**
- * Smooth camera orbit controller using spherical coordinates
- * Provides fluid transitions and proper terrain avoidance
- */
-class CameraOrbitController {
-  constructor(map, targetLocation, options = {}) {
+class SmoothCameraOrbit {
+  constructor(map, target) {
     this.map = map;
-    this.targetLocation = targetLocation;
+    this.target = target;
     
-    // Orbit parameters (in spherical coordinates)
-    this.currentBearing = options.initialBearing || 0;
-    this.currentPitch = options.initialPitch || 55;
-    this.currentDistance = options.initialDistance || 400;
+    // Orbital state
+    this.bearing = 0;
+    this.pitch = 88; // Start nearly top-down
+    this.currentAltitude = 1200; // Current camera altitude above target
     
-    // Target values for smooth interpolation
-    this.targetBearing = this.currentBearing;
-    this.targetPitch = this.currentPitch;
-    this.targetDistance = this.currentDistance;
+    // Targets
+    this.targetPitch = 52;
     
-    // Configuration
-    this.orbitSpeed = options.orbitSpeed || 0.08; // degrees per frame
-    this.minPitch = options.minPitch || 35;
-    this.maxPitch = options.maxPitch || 70;
-    this.minDistance = options.minDistance || 150;
-    this.maxDistance = options.maxDistance || 1500;
-    this.minAltitudeAboveTerrain = options.minAltitudeAboveTerrain || 80;
-    this.groundElevation = options.groundElevation || 0;
-    
-    // Smoothing factors (0-1, higher = faster response)
-    this.bearingSmoothFactor = 0.02;
-    this.pitchSmoothFactor = 0.04;
-    this.distanceSmoothFactor = 0.03;
+    // Config
+    this.orbitSpeed = 0.15;
+    this.minTerrainClearance = 80;
     
     // Animation state
-    this.animationFrame = null;
-    this.isOrbiting = false;
+    this.isRunning = false;
     this.isPaused = false;
+    this.animationFrame = null;
     
-    // Terrain cache for performance
-    this.terrainCache = new Map();
-    this.terrainCacheTimeout = 500; // ms
+    // Intro animation
+    this.introProgress = 0;
+    this.introDuration = 2200;
+    this.introStartTime = null;
+    
+    // Cache ground elevation
+    this.groundElevation = 0;
+    this.updateGroundElevation();
   }
 
-  /**
-   * Convert degrees to radians
-   */
-  toRadians(degrees) {
-    return (degrees * Math.PI) / 180;
-  }
-
-  /**
-   * Get terrain elevation with caching
-   */
-  getTerrainElevation(lng, lat) {
-    const key = `${lng.toFixed(5)},${lat.toFixed(5)}`;
-    const cached = this.terrainCache.get(key);
-    
-    if (cached && Date.now() - cached.time < this.terrainCacheTimeout) {
-      return cached.elevation;
+  updateGroundElevation() {
+    const elev = this.map.queryTerrainElevation(this.target);
+    if (elev !== null && elev !== undefined) {
+      this.groundElevation = elev;
     }
-    
-    const elevation = this.map.queryTerrainElevation(new maplibregl.LngLat(lng, lat)) || 0;
-    this.terrainCache.set(key, { elevation, time: Date.now() });
-    
-    // Limit cache size
-    if (this.terrainCache.size > 100) {
-      const firstKey = this.terrainCache.keys().next().value;
-      this.terrainCache.delete(firstKey);
-    }
-    
-    return elevation;
   }
 
   /**
-   * Sample terrain around the orbit path to find safe altitude
+   * Get ideal altitude based on zoom level
+   * This is called EVERY FRAME so zoom changes are instantly reflected
    */
-  sampleOrbitPathTerrain(bearing, distance) {
-    const samples = 8;
-    let maxElevation = this.groundElevation;
-    
-    const pitchRad = this.toRadians(this.currentPitch);
-    const horizontalDist = distance * Math.cos(pitchRad);
-    
-    // Sample terrain along part of the orbit path
-    for (let i = -2; i <= 2; i++) {
-      const sampleBearing = bearing + i * 15; // Check ±30 degrees
-      const bearingRad = this.toRadians(sampleBearing);
-      
-      const metersPerDegreeLng = 111320 * Math.cos(this.toRadians(this.targetLocation.lat));
-      const metersPerDegreeLat = 111320;
-      
-      const offsetLng = (Math.sin(bearingRad) * horizontalDist) / metersPerDegreeLng;
-      const offsetLat = (Math.cos(bearingRad) * horizontalDist) / metersPerDegreeLat;
-      
-      const sampleLng = this.targetLocation.lng + offsetLng;
-      const sampleLat = this.targetLocation.lat + offsetLat;
-      
-      const elev = this.getTerrainElevation(sampleLng, sampleLat);
-      maxElevation = Math.max(maxElevation, elev);
-    }
-    
-    return maxElevation;
-  }
-
-  /**
-   * Calculate camera position using spherical coordinates with terrain avoidance
-   */
-  calculateCameraPosition(bearing, pitch, distance) {
-    const pitchRad = this.toRadians(pitch);
-    const bearingRad = this.toRadians(bearing);
-    
-    // Calculate horizontal and vertical components
-    const horizontalDist = distance * Math.cos(pitchRad);
-    const verticalDist = distance * Math.sin(pitchRad);
-    
-    // Convert to geographic offset
-    const metersPerDegreeLng = 111320 * Math.cos(this.toRadians(this.targetLocation.lat));
-    const metersPerDegreeLat = 111320;
-    
-    const offsetLng = (Math.sin(bearingRad) * horizontalDist) / metersPerDegreeLng;
-    const offsetLat = (Math.cos(bearingRad) * horizontalDist) / metersPerDegreeLat;
-    
-    const cameraLng = this.targetLocation.lng + offsetLng;
-    const cameraLat = this.targetLocation.lat + offsetLat;
-    
-    // Get terrain elevation at camera position and along path
-    const cameraTerrainElev = this.getTerrainElevation(cameraLng, cameraLat);
-    const pathMaxElev = this.sampleOrbitPathTerrain(bearing, distance);
-    
-    // Calculate target altitude (looking at refuge + some offset for the model)
-    const targetAltitude = this.groundElevation + 15; // 15m above ground for model center
-    const desiredCameraAlt = targetAltitude + verticalDist;
-    
-    // Ensure camera is safely above terrain
-    const minSafeAlt = Math.max(cameraTerrainElev, pathMaxElev) + this.minAltitudeAboveTerrain;
-    const cameraAlt = Math.max(desiredCameraAlt, minSafeAlt);
-    
-    // Create mercator coordinates
-    const cameraPos = maplibregl.MercatorCoordinate.fromLngLat(
-      { lng: cameraLng, lat: cameraLat },
-      cameraAlt
-    );
-    
-    const targetPos = maplibregl.MercatorCoordinate.fromLngLat(
-      this.targetLocation,
-      targetAltitude
-    );
-    
-    return { cameraPos, targetPos, cameraAlt, minSafeAlt };
-  }
-
-  /**
-   * Smoothly interpolate between current and target values
-   */
-  lerp(current, target, factor) {
-    return current + (target - current) * factor;
-  }
-
-  /**
-   * Apply camera position to the map
-   */
-  applyCamera(cameraPos, targetPos) {
-    const camera = this.map.getFreeCameraOptions();
-    camera.position = cameraPos;
-    camera.lookAtPoint(targetPos);
-    this.map.setFreeCameraOptions(camera);
-  }
-
-  /**
-   * Update orbit parameters based on current zoom level
-   */
-  updateDistanceFromZoom() {
+  getIdealAltitudeForZoom() {
     const zoom = this.map.getZoom();
-    
-    // Exponential scaling: closer zoom = smaller orbit
-    const baseDistance = 350;
-    const zoomFactor = Math.pow(1.25, 14 - zoom);
-    const newDistance = Math.min(Math.max(baseDistance * zoomFactor, this.minDistance), this.maxDistance);
-    
-    this.targetDistance = newDistance;
+    // Tuned for good viewing: zoom 14 = ~320m, zoom 12 = ~900m, zoom 16 = ~120m
+    const base = 300;
+    const altitude = base * Math.pow(1.55, 14 - zoom);
+    return Math.max(100, Math.min(altitude, 3000));
   }
 
   /**
-   * Main animation frame - smooth continuous orbit
+   * Get terrain elevation at a point (with fallback)
    */
-  animate = () => {
-    if (!this.isOrbiting || this.isPaused) return;
+  getTerrainAt(lng, lat) {
+    const elev = this.map.queryTerrainElevation(new maplibregl.LngLat(lng, lat));
+    return elev ?? this.groundElevation;
+  }
+
+  /**
+   * Convert spherical orbit params to camera position
+   */
+  computeCameraState() {
+    const toRad = (d) => d * Math.PI / 180;
     
-    // Update target distance based on zoom
-    this.updateDistanceFromZoom();
+    const pitchRad = toRad(this.pitch);
+    const bearingRad = toRad(this.bearing);
     
-    // Smoothly interpolate current values toward targets
-    this.currentDistance = this.lerp(this.currentDistance, this.targetDistance, this.distanceSmoothFactor);
-    this.currentPitch = this.lerp(this.currentPitch, this.targetPitch, this.pitchSmoothFactor);
+    // Horizontal distance depends on pitch and altitude
+    // At pitch=90 (top-down): horizontal = 0
+    // At pitch=45: horizontal = altitude
+    const horizontalDist = this.currentAltitude / Math.tan(pitchRad);
     
-    // Advance bearing (with smooth acceleration/deceleration near obstacles if needed)
-    this.targetBearing = (this.targetBearing + this.orbitSpeed) % 360;
-    this.currentBearing = this.lerp(this.currentBearing, this.targetBearing, this.bearingSmoothFactor);
+    // Geographic conversion
+    const mPerDegLat = 111320;
+    const mPerDegLng = mPerDegLat * Math.cos(toRad(this.target.lat));
     
-    // Handle bearing wraparound
-    if (Math.abs(this.targetBearing - this.currentBearing) > 180) {
-      if (this.targetBearing > this.currentBearing) {
-        this.currentBearing += 360;
-      } else {
-        this.currentBearing -= 360;
-      }
-    }
-    this.currentBearing = ((this.currentBearing % 360) + 360) % 360;
+    const dLng = (Math.sin(bearingRad) * horizontalDist) / mPerDegLng;
+    const dLat = (Math.cos(bearingRad) * horizontalDist) / mPerDegLat;
     
-    // Calculate and apply camera position
-    const { cameraPos, targetPos } = this.calculateCameraPosition(
-      this.currentBearing,
-      this.currentPitch,
-      this.currentDistance
+    const camLng = this.target.lng + dLng;
+    const camLat = this.target.lat + dLat;
+    
+    // Terrain safety check
+    const terrainAtCam = this.getTerrainAt(camLng, camLat);
+    const lookAtZ = this.groundElevation + 12; // Model center height
+    const desiredCamZ = lookAtZ + this.currentAltitude;
+    const safeCamZ = Math.max(desiredCamZ, terrainAtCam + this.minTerrainClearance);
+    
+    return { camLng, camLat, camZ: safeCamZ, lookAtZ };
+  }
+
+  /**
+   * Apply camera to map
+   */
+  applyCamera() {
+    const { camLng, camLat, camZ, lookAtZ } = this.computeCameraState();
+    
+    const camPos = maplibregl.MercatorCoordinate.fromLngLat(
+      { lng: camLng, lat: camLat },
+      camZ
+    );
+    const lookAt = maplibregl.MercatorCoordinate.fromLngLat(
+      this.target,
+      lookAtZ
     );
     
-    this.applyCamera(cameraPos, targetPos);
+    const cam = this.map.getFreeCameraOptions();
+    cam.position = camPos;
+    cam.lookAtPoint(lookAt);
+    this.map.setFreeCameraOptions(cam);
+  }
+
+  /**
+   * Smooth easing
+   */
+  easeOutQuart(t) {
+    return 1 - Math.pow(1 - t, 4);
+  }
+  
+  easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  /**
+   * Main tick - runs every frame
+   */
+  tick = () => {
+    if (!this.isRunning) return;
     
-    // Update map bearing to match (for UI consistency)
-    this.map.setBearing(this.currentBearing, { animate: false });
+    const now = performance.now();
+    const idealAlt = this.getIdealAltitudeForZoom();
     
-    // Continue animation
-    this.animationFrame = requestAnimationFrame(this.animate);
+    // Intro phase: animate pitch from top-down to orbit angle
+    if (this.introProgress < 1) {
+      if (!this.introStartTime) this.introStartTime = now;
+      
+      const elapsed = now - this.introStartTime;
+      this.introProgress = Math.min(elapsed / this.introDuration, 1);
+      const eased = this.easeOutQuart(this.introProgress);
+      
+      // Pitch: 88° -> targetPitch
+      this.pitch = 88 - (88 - this.targetPitch) * eased;
+      
+      // Altitude: start high, descend to ideal
+      const startAlt = 1400;
+      this.currentAltitude = startAlt + (idealAlt - startAlt) * eased;
+      
+      // Rotate during intro (slightly faster for drama)
+      this.bearing = (this.bearing + this.orbitSpeed * 1.5) % 360;
+    } 
+    // Normal orbit phase
+    else if (!this.isPaused) {
+      // Smoothly track ideal altitude (this makes zoom changes fluid!)
+      const altDelta = idealAlt - this.currentAltitude;
+      this.currentAltitude += altDelta * 0.08;
+      
+      // Continuous rotation
+      this.bearing = (this.bearing + this.orbitSpeed) % 360;
+      
+      // Keep pitch at target
+      this.pitch = this.targetPitch;
+    }
+    
+    // Update ground elevation periodically (terrain might load late)
+    if (Math.random() < 0.02) {
+      this.updateGroundElevation();
+    }
+    
+    this.applyCamera();
+    this.animationFrame = requestAnimationFrame(this.tick);
   };
 
-  /**
-   * Start the orbit animation
-   */
   start() {
-    if (this.isOrbiting) return;
-    this.isOrbiting = true;
-    this.isPaused = false;
-    this.animationFrame = requestAnimationFrame(this.animate);
+    if (this.isRunning) return;
+    this.isRunning = true;
+    this.animationFrame = requestAnimationFrame(this.tick);
   }
 
-  /**
-   * Stop the orbit animation
-   */
   stop() {
-    this.isOrbiting = false;
+    this.isRunning = false;
     if (this.animationFrame) {
       cancelAnimationFrame(this.animationFrame);
       this.animationFrame = null;
     }
   }
 
-  /**
-   * Pause orbit (can resume)
-   */
   pause() {
     this.isPaused = true;
   }
 
-  /**
-   * Resume orbit after pause
-   */
   resume() {
-    if (!this.isOrbiting) {
-      this.start();
-    } else {
-      this.isPaused = false;
-      this.animationFrame = requestAnimationFrame(this.animate);
-    }
+    this.isPaused = false;
   }
 
-  /**
-   * Smoothly transition to a new camera configuration
-   */
-  transitionTo(bearing, pitch, distance, duration = 1500) {
-    return new Promise((resolve) => {
-      const wasOrbiting = this.isOrbiting;
-      this.stop();
-      
-      const startBearing = this.currentBearing;
-      const startPitch = this.currentPitch;
-      const startDistance = this.currentDistance;
-      const startTime = performance.now();
-      
-      // Handle bearing wraparound for shortest path
-      let targetBearing = bearing;
-      if (Math.abs(targetBearing - startBearing) > 180) {
-        if (targetBearing > startBearing) {
-          targetBearing -= 360;
-        } else {
-          targetBearing += 360;
-        }
-      }
-      
-      const animate = () => {
-        const elapsed = performance.now() - startTime;
-        const progress = Math.min(elapsed / duration, 1);
-        
-        // Ease-out cubic for smooth deceleration
-        const eased = 1 - Math.pow(1 - progress, 3);
-        
-        this.currentBearing = startBearing + (targetBearing - startBearing) * eased;
-        this.currentPitch = startPitch + (pitch - startPitch) * eased;
-        this.currentDistance = startDistance + (distance - startDistance) * eased;
-        
-        // Normalize bearing
-        this.currentBearing = ((this.currentBearing % 360) + 360) % 360;
-        
-        const { cameraPos, targetPos } = this.calculateCameraPosition(
-          this.currentBearing,
-          this.currentPitch,
-          this.currentDistance
-        );
-        
-        this.applyCamera(cameraPos, targetPos);
-        this.map.setBearing(this.currentBearing, { animate: false });
-        
-        if (progress < 1) {
-          this.animationFrame = requestAnimationFrame(animate);
-        } else {
-          // Update targets to match final values
-          this.targetBearing = this.currentBearing;
-          this.targetPitch = this.currentPitch;
-          this.targetDistance = this.currentDistance;
-          
-          if (wasOrbiting) {
-            this.start();
-          }
-          resolve();
-        }
-      };
-      
-      this.animationFrame = requestAnimationFrame(animate);
-    });
-  }
-
-  /**
-   * Update ground elevation (call after terrain loads)
-   */
-  setGroundElevation(elevation) {
-    this.groundElevation = elevation;
-  }
-
-  /**
-   * Clean up resources
-   */
   dispose() {
     this.stop();
-    this.terrainCache.clear();
   }
 }
 
 // ============================================================================
-// END CAMERA ORBIT SYSTEM
+// COMPONENT
 // ============================================================================
 
 const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, isLiked, onToggleLike, isDisliked, onToggleDislike, massif }) => {
@@ -420,7 +281,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
   const expandedMapRef = useRef(null);
   const expandedMapInstanceRef = useRef(null);
   const overlayVisibilityRef = useRef(overlayVisibilityDefaults);
-  const orbitControllerRef = useRef(null);
+  const orbitRef = useRef(null);
 
   const hasWater = details?.water && !details.water.toLowerCase().includes('non');
   const hasWood = details?.wood && !details.wood.toLowerCase().includes('non');
@@ -443,6 +304,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     });
   };
 
+  // Mini map effect
   useEffect(() => {
     if (!miniMapContainerRef.current) return undefined;
     const coords = refuge.geometry?.coordinates;
@@ -476,45 +338,27 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     };
   }, [refuge]);
 
+  // Expanded 3D map effect
   useEffect(() => {
     if (!mapExpanded || !expandedMapRef.current) return undefined;
 
     let idleTimeout;
-    let orbitStartTimeout;
     let mapInstance;
     let selectedLocation;
 
-    const userInteractionEvents = [
-      'dragstart',
-      'zoomstart',
-      'rotatestart',
-      'pitchstart',
-      'movestart',
-      'mousedown',
-      'click',
-      'contextmenu',
-      'wheel',
-    ];
-
-    const handleUserInteraction = (event) => {
-      if (!event?.originalEvent) return;
-      
-      // Pause orbit during interaction
-      if (orbitControllerRef.current) {
-        orbitControllerRef.current.pause();
-      }
-      
-      // Reset idle timer
+    const resetIdleTimer = () => {
       if (idleTimeout) clearTimeout(idleTimeout);
       idleTimeout = setTimeout(() => {
-        // Resume orbit after idle
-        if (orbitControllerRef.current) {
-          orbitControllerRef.current.resume();
-        }
-      }, 4000);
+        orbitRef.current?.resume();
+      }, 3000);
     };
 
-    const setupExpandedMap = async () => {
+    const handleInteraction = () => {
+      orbitRef.current?.pause();
+      resetIdleTimer();
+    };
+
+    const setup = async () => {
       const coords = refuge.geometry?.coordinates || [6.4, 45.2];
       selectedLocation = new maplibregl.LngLat(coords[0], coords[1]);
 
@@ -522,7 +366,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
         container: expandedMapRef.current,
         style: 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json',
         center: coords,
-        zoom: 12,
+        zoom: 14,
         pitch: 0,
         bearing: 0,
         attributionControl: true,
@@ -538,83 +382,52 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
       expandedMapInstanceRef.current = mapInstance;
 
-      const lockBounds = new maplibregl.LngLatBounds(
-        [selectedLocation.lng - 0.02, selectedLocation.lat - 0.02],
-        [selectedLocation.lng + 0.02, selectedLocation.lat + 0.02]
-      );
-      mapInstance.setMaxBounds(lockBounds);
+      // Constrain to area
+      mapInstance.setMaxBounds([
+        [selectedLocation.lng - 0.03, selectedLocation.lat - 0.03],
+        [selectedLocation.lng + 0.03, selectedLocation.lat + 0.03]
+      ]);
 
-      userInteractionEvents.forEach((eventName) => {
-        mapInstance.on(eventName, handleUserInteraction);
+      // Interaction handlers
+      const canvas = mapInstance.getCanvas();
+      canvas.addEventListener('mousedown', handleInteraction, { passive: true });
+      canvas.addEventListener('wheel', handleInteraction, { passive: true });
+      canvas.addEventListener('touchstart', handleInteraction, { passive: true });
+
+      // Add other refuge markers
+      (refuges || []).forEach((f) => {
+        const pos = f.geometry?.coordinates;
+        if (!pos || pos.length < 2) return;
+        if (f.properties?.id === refuge.properties?.id) return;
+        
+        createRefugeMarker(f, mapInstance, undefined, { compact: true }, {}).addTo(mapInstance);
       });
-
-      const bounds = new maplibregl.LngLatBounds();
-      const features = Array.isArray(refuges) ? refuges : [];
-
-      bounds.extend(selectedLocation);
-
-      features.forEach((feature) => {
-        const position = feature.geometry?.coordinates;
-        if (!position || position.length < 2) return;
-        const isSelected = feature.properties?.id === refuge.properties?.id;
-
-        if (!isSelected) {
-          const marker = createRefugeMarker(
-            feature,
-            mapInstance,
-            undefined,
-            { compact: true },
-            { isSelected }
-          );
-
-          marker.addTo(mapInstance);
-        }
-
-        bounds.extend(position);
-      });
-
-      if (!bounds.isEmpty()) {
-        mapInstance.fitBounds(bounds, { padding: 60, maxZoom: 12 });
-      } else {
-        mapInstance.setCenter(coords);
-        mapInstance.setZoom(12);
-      }
 
       mapInstance.on('load', async () => {
-        // Add hillshade layer
-        if (!mapInstance.getSource('modal-hillshade')) {
-          mapInstance.addSource('modal-hillshade', {
-            type: 'raster-dem',
-            url: 'https://tiles.mapterhorn.com/tilejson.json',
-            tileSize: 256,
-          });
-        }
-
-        if (!mapInstance.getLayer('modal-hillshade-layer')) {
-          mapInstance.addLayer({
-            id: 'modal-hillshade-layer',
-            type: 'hillshade',
-            source: 'modal-hillshade',
-            paint: {
-              'hillshade-exaggeration': 0.3,
-              'hillshade-shadow-color': '#000000',
-            },
-          });
-        }
+        // Hillshade
+        mapInstance.addSource('hillshade-src', {
+          type: 'raster-dem',
+          url: 'https://tiles.mapterhorn.com/tilejson.json',
+          tileSize: 256,
+        });
+        mapInstance.addLayer({
+          id: 'hillshade-layer',
+          type: 'hillshade',
+          source: 'hillshade-src',
+          paint: { 'hillshade-exaggeration': 0.3 },
+        });
 
         applyOverlayLayers(mapInstance, overlayVisibilityRef.current);
 
-        // Add terrain
-        if (!mapInstance.getSource('modal-terrain-dem')) {
-          mapInstance.addSource('modal-terrain-dem', {
-            type: 'raster-dem',
-            url: 'https://tiles.mapterhorn.com/tilejson.json',
-            tileSize: 256,
-          });
+        // Terrain
+        mapInstance.addSource('terrain-src', {
+          type: 'raster-dem',
+          url: 'https://tiles.mapterhorn.com/tilejson.json',
+          tileSize: 256,
+        });
+        mapInstance.setTerrain({ source: 'terrain-src', exaggeration: 1.0 });
 
-          mapInstance.setTerrain({ source: 'modal-terrain-dem', exaggeration: 1.0 });
-        }
-
+        // Load 3D model
         try {
           const { THREE, GLTFLoader } = await loadThreeStack();
           if (!THREE || !GLTFLoader) return;
@@ -622,75 +435,49 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
           const loader = new GLTFLoader();
           loader.setCrossOrigin('anonymous');
 
-          const modelUrl = `${import.meta.env.BASE_URL}refuge_LP.glb`;
-          const gltf = await loader.loadAsync(modelUrl);
+          const gltf = await loader.loadAsync(`${import.meta.env.BASE_URL}refuge_LP.glb`);
           const model = gltf?.scene;
+          if (!model) return;
 
-          if (!model) {
-            return;
-          }
-
+          // Fix materials
           model.traverse((child) => {
             if (!child.isMesh) return;
-
-            const materials = Array.isArray(child.material) ? child.material : [child.material];
-
-            materials.forEach((material) => {
-              if (!material) return;
-
-              ['map', 'emissiveMap'].forEach((key) => {
-                if (!material[key]) return;
-                material[key].colorSpace = THREE.SRGBColorSpace;
+            const mats = Array.isArray(child.material) ? child.material : [child.material];
+            mats.forEach((m) => {
+              if (!m) return;
+              ['map', 'emissiveMap'].forEach((k) => {
+                if (m[k]) m[k].colorSpace = THREE.SRGBColorSpace;
               });
-
-              material.needsUpdate = true;
+              m.needsUpdate = true;
             });
-
-            child.material = Array.isArray(child.material) ? materials : materials[0];
           });
 
+          // Center and scale model
           const box = new THREE.Box3().setFromObject(model);
           const center = box.getCenter(new THREE.Vector3());
           const size = new THREE.Vector3();
           box.getSize(size);
-          const maxDimension = Math.max(size.x, size.y, size.z, 1);
+          const maxDim = Math.max(size.x, size.y, size.z, 1);
 
-          model.position.x -= center.x;
-          model.position.y -= box.min.y;
-          model.position.z -= center.z;
+          model.position.set(-center.x, -box.min.y, -center.z);
+          model.scale.setScalar((30 * 5) / maxDim);
 
-          model.scale.setScalar((30 * 5) / maxDimension);
+          // Orient model based on terrain slope
+          const offset = 0.001;
+          const getElev = (lng, lat) => mapInstance.queryTerrainElevation(new maplibregl.LngLat(lng, lat)) || 0;
+          const eN = getElev(coords[0], coords[1] + offset);
+          const eS = getElev(coords[0], coords[1] - offset);
+          const eE = getElev(coords[0] + offset, coords[1]);
+          const eW = getElev(coords[0] - offset, coords[1]);
+          
+          if (!(eN === 0 && eS === 0 && eE === 0 && eW === 0)) {
+            const downhill = Math.atan2(-(eN - eS), -(eE - eW));
+            model.rotation.y = downhill - Math.PI / 2;
+          }
 
-          // Analyze terrain for model orientation
-          const analyzeTerrain = () => {
-            const centerCoord = selectedLocation;
-            const offset = 0.001;
-
-            const getElev = (lng, lat) => mapInstance.queryTerrainElevation(new maplibregl.LngLat(lng, lat)) || 0;
-
-            const eC = getElev(centerCoord.lng, centerCoord.lat);
-            const eN = getElev(centerCoord.lng, centerCoord.lat + offset);
-            const eS = getElev(centerCoord.lng, centerCoord.lat - offset);
-            const eE = getElev(centerCoord.lng + offset, centerCoord.lat);
-            const eW = getElev(centerCoord.lng - offset, centerCoord.lat);
-
-            if (eN === 0 && eS === 0 && eE === 0 && eW === 0) {
-              return { rotation: 0, groundElevation: 0 };
-            }
-
-            const dz_dy = eN - eS;
-            const dz_dx = eE - eW;
-            const downhillAngle = Math.atan2(-dz_dy, -dz_dx);
-            const rotation = downhillAngle - Math.PI / 2;
-
-            return { rotation, groundElevation: eC };
-          };
-
-          const { rotation, groundElevation } = analyzeTerrain();
-          model.rotation.y = rotation;
-
+          // Custom 3D layer
           const customLayer = {
-            id: 'refuge-3d-model',
+            id: 'refuge-3d',
             type: 'custom',
             renderingMode: '3d',
             onAdd(map, gl) {
@@ -698,46 +485,25 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               this.scene = new THREE.Scene();
               this.scene.rotateX(Math.PI / 2);
               this.scene.scale.multiply(new THREE.Vector3(1, 1, -1));
-
-              const ambient = new THREE.AmbientLight(0xffffff, 1.2);
-              this.scene.add(ambient);
-
-              this.model = model;
-              this.scene.add(this.model);
+              this.scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+              this.scene.add(model);
 
               this.renderer = new THREE.WebGLRenderer({
                 canvas: map.getCanvas(),
                 context: gl,
                 antialias: true,
               });
-
-              if ('outputColorSpace' in this.renderer) {
-                this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-              } else {
-                this.renderer.outputEncoding = THREE.sRGBEncoding;
-              }
+              this.renderer.outputColorSpace = THREE.SRGBColorSpace;
               this.renderer.autoClear = false;
             },
             render(gl, args) {
-              if (!this.model) return;
-
-              const elevation = mapInstance.queryTerrainElevation(selectedLocation) || 0;
-              const mercatorCoord = maplibregl.MercatorCoordinate.fromLngLat(
-                selectedLocation,
-                elevation
-              );
-
-              const modelTransform = {
-                translateX: mercatorCoord.x,
-                translateY: mercatorCoord.y,
-                translateZ: mercatorCoord.z,
-                scale: mercatorCoord.meterInMercatorCoordinateUnits(),
-              };
+              const elev = mapInstance.queryTerrainElevation(selectedLocation) || 0;
+              const mc = maplibregl.MercatorCoordinate.fromLngLat(selectedLocation, elev);
 
               const m = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix);
               const l = new THREE.Matrix4()
-                .makeTranslation(modelTransform.translateX, modelTransform.translateY, modelTransform.translateZ)
-                .scale(new THREE.Vector3(modelTransform.scale, -modelTransform.scale, modelTransform.scale));
+                .makeTranslation(mc.x, mc.y, mc.z)
+                .scale(new THREE.Vector3(mc.meterInMercatorCoordinateUnits(), -mc.meterInMercatorCoordinateUnits(), mc.meterInMercatorCoordinateUnits()));
 
               this.camera.projectionMatrix = m.multiply(l);
               this.renderer.resetState();
@@ -748,61 +514,30 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
 
           mapInstance.addLayer(customLayer);
 
-          // Initialize the orbit controller
-          orbitControllerRef.current = new CameraOrbitController(mapInstance, selectedLocation, {
-            initialBearing: mapInstance.getBearing(),
-            initialPitch: 55,
-            initialDistance: 400,
-            groundElevation: groundElevation,
-            minAltitudeAboveTerrain: 100,
-            orbitSpeed: 0.1,
-          });
+          // Start camera orbit after a short delay for terrain to load
+          setTimeout(() => {
+            orbitRef.current = new SmoothCameraOrbit(mapInstance, selectedLocation);
+            orbitRef.current.start();
+          }, 400);
 
-          // Start with a top-down view, then transition to orbit
-          const initialZoom = 14.5;
-          mapInstance.easeTo({
-            center: selectedLocation,
-            zoom: initialZoom,
-            pitch: 20,
-            bearing: 0,
-            duration: 800,
-            essential: true,
-          });
-
-          mapInstance.once('moveend', () => {
-            orbitStartTimeout = setTimeout(async () => {
-              if (!mapInstance || !orbitControllerRef.current) return;
-
-              // Smooth transition into orbit position
-              await orbitControllerRef.current.transitionTo(0, 55, 400, 1800);
-              
-              // Start continuous orbit
-              orbitControllerRef.current.start();
-            }, 600);
-          });
-
-        } catch (error) {
-          console.error('Failed to load 3D model', error);
+        } catch (err) {
+          console.error('3D model load failed:', err);
         }
       });
     };
 
-    setupExpandedMap();
+    setup();
 
     return () => {
-      // Clean up orbit controller
-      if (orbitControllerRef.current) {
-        orbitControllerRef.current.dispose();
-        orbitControllerRef.current = null;
-      }
-      
       if (idleTimeout) clearTimeout(idleTimeout);
-      if (orbitStartTimeout) clearTimeout(orbitStartTimeout);
+      orbitRef.current?.dispose();
+      orbitRef.current = null;
       
       if (mapInstance) {
-        userInteractionEvents.forEach((eventName) => {
-          mapInstance.off(eventName, handleUserInteraction);
-        });
+        const canvas = mapInstance.getCanvas();
+        canvas.removeEventListener('mousedown', handleInteraction);
+        canvas.removeEventListener('wheel', handleInteraction);
+        canvas.removeEventListener('touchstart', handleInteraction);
         mapInstance.remove();
       }
       expandedMapInstanceRef.current = null;
@@ -817,15 +552,11 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
     if (!mapExpanded) return;
     const map = expandedMapInstanceRef.current;
     if (!map || !map.isStyleLoaded()) return;
-
     applyOverlayLayers(map, overlayVisibility);
   }, [mapExpanded, overlayVisibility]);
 
   const toggleOverlayLayer = (layerId) => {
-    setOverlayVisibility((prev) => ({
-      ...prev,
-      [layerId]: !prev[layerId],
-    }));
+    setOverlayVisibility((prev) => ({ ...prev, [layerId]: !prev[layerId] }));
   };
 
   return (
@@ -868,6 +599,7 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
             border: '1px solid rgba(255,255,255,0.12)',
           }}
         >
+          {/* Header */}
           <div
             style={{
               display: 'flex',
@@ -875,7 +607,6 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               gap: '1rem',
               padding: '1.25rem 1.5rem',
               borderBottom: '1px solid rgba(255,255,255,0.08)',
-              position: 'relative',
             }}
           >
             <div style={{ flex: 1 }}>
@@ -894,250 +625,93 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               {massifBreadcrumb && (
                 <div style={{ marginTop: '0.45rem', display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Massif</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
-                    {massifBreadcrumb.map((step, idx) => (
-                      <React.Fragment key={`${step}-${idx}`}>
-                        <span style={{ padding: '0.25rem 0.6rem', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)' }}>
-                          {step}
-                        </span>
-                        {idx < massifBreadcrumb.length - 1 && <ChevronRight size={16} style={{ opacity: 0.6 }} />}
-                      </React.Fragment>
-                    ))}
-                  </div>
+                  {massifBreadcrumb.map((step, idx) => (
+                    <React.Fragment key={`${step}-${idx}`}>
+                      <span style={{ padding: '0.25rem 0.6rem', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                        {step}
+                      </span>
+                      {idx < massifBreadcrumb.length - 1 && <ChevronRight size={16} style={{ opacity: 0.6 }} />}
+                    </React.Fragment>
+                  ))}
                 </div>
               )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <button
-                onClick={onToggleStar}
-                style={{
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  color: isStarred ? 'var(--warning)' : 'var(--text-secondary)',
-                  borderRadius: '50%',
-                  width: '42px',
-                  height: '42px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                }}
-                title={isStarred ? "Retirer des favoris" : "Ajouter aux favoris"}
-              >
+              <button onClick={onToggleStar} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: isStarred ? 'var(--warning)' : 'var(--text-secondary)', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }} title={isStarred ? "Retirer des favoris" : "Ajouter aux favoris"}>
                 <Star size={20} fill={isStarred ? 'currentColor' : 'none'} />
               </button>
-              <button
-                onClick={onToggleLike}
-                style={{
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  color: isLiked ? '#ef4444' : 'var(--text-secondary)',
-                  borderRadius: '50%',
-                  width: '42px',
-                  height: '42px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                }}
-                title={isLiked ? "Je n'aime plus" : "J'aime"}
-              >
+              <button onClick={onToggleLike} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: isLiked ? '#ef4444' : 'var(--text-secondary)', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }} title={isLiked ? "Je n'aime plus" : "J'aime"}>
                 <Heart size={20} fill={isLiked ? 'currentColor' : 'none'} />
               </button>
-              <button
-                onClick={onToggleDislike}
-                style={{
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  color: isDisliked ? '#ef4444' : 'var(--text-secondary)',
-                  borderRadius: '50%',
-                  width: '42px',
-                  height: '42px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                }}
-                title={isDisliked ? "Retirer de la liste interdite" : "Ajouter à la liste interdite"}
-              >
+              <button onClick={onToggleDislike} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: isDisliked ? '#ef4444' : 'var(--text-secondary)', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }} title={isDisliked ? "Retirer de la liste interdite" : "Ajouter à la liste interdite"}>
                 <Ban size={20} />
               </button>
-              <a
-                href={lien}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '0.35rem',
-                  textDecoration: 'none',
-                  padding: '0.55rem 0.9rem',
-                  background: 'rgba(255,255,255,0.08)',
-                  color: 'var(--text-primary)',
-                }}
-              >
+              <a href={lien} target="_blank" rel="noopener noreferrer" className="btn" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem', textDecoration: 'none', padding: '0.55rem 0.9rem', background: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)' }}>
                 Voir sur refuges.info <ExternalLink size={16} />
               </a>
-              <button
-                onClick={onClose}
-                style={{
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  color: 'white',
-                  borderRadius: '50%',
-                  width: '42px',
-                  height: '42px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                }}
-              >
+              <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
                 <X size={22} />
               </button>
             </div>
           </div>
 
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1.1fr 0.9fr',
-              gap: '1.25rem',
-              padding: '1.25rem',
-              overflow: 'hidden',
-              minHeight: 0,
-            }}
-          >
+          {/* Content */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '1.25rem', padding: '1.25rem', overflow: 'hidden', minHeight: 0 }}>
+            {/* Left column */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', overflowY: 'auto', paddingRight: '0.25rem' }}>
               <div className="glass-panel" style={{ padding: '1.25rem', background: 'rgba(255,255,255,0.03)' }}>
                 <h4 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Equipements</h4>
                 <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.8rem' }}>
-                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: hasWater ? 'var(--success)' : 'var(--text-secondary)' }}>
-                    <Droplets size={18} />
-                    <span>{details?.water || 'Eau inconnue'}</span>
-                  </li>
-                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: hasWood ? 'var(--warning)' : 'var(--text-secondary)' }}>
-                    <Flame size={18} />
-                    <span>{details?.wood || 'Bois inconnu'}</span>
-                  </li>
-                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: details?.heating && !details.heating.toLowerCase().includes('non') ? 'var(--warning)' : 'var(--text-secondary)' }}>
-                    <Flame size={18} />
-                    <span>Chauffage: {details?.heating || '?'}</span>
-                  </li>
-                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: hasLatrines ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                    <Tent size={18} />
-                    <span>Latrines: {details?.latrines || '?'}</span>
-                  </li>
-                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: details?.mattress && !details.mattress.toLowerCase().includes('0') ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                    <Bed size={18} />
-                    <span>Matelas: {details?.mattress || '?'}</span>
-                  </li>
-                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: details?.blankets && !details.blankets.toLowerCase().includes('non') ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                    <Bed size={18} />
-                    <span>Couvertures: {details?.blankets || '?'}</span>
-                  </li>
+                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: hasWater ? 'var(--success)' : 'var(--text-secondary)' }}><Droplets size={18} /><span>{details?.water || 'Eau inconnue'}</span></li>
+                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: hasWood ? 'var(--warning)' : 'var(--text-secondary)' }}><Flame size={18} /><span>{details?.wood || 'Bois inconnu'}</span></li>
+                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: details?.heating && !details.heating.toLowerCase().includes('non') ? 'var(--warning)' : 'var(--text-secondary)' }}><Flame size={18} /><span>Chauffage: {details?.heating || '?'}</span></li>
+                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: hasLatrines ? 'var(--text-primary)' : 'var(--text-secondary)' }}><Tent size={18} /><span>Latrines: {details?.latrines || '?'}</span></li>
+                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: details?.mattress && !details.mattress.toLowerCase().includes('0') ? 'var(--text-primary)' : 'var(--text-secondary)' }}><Bed size={18} /><span>Matelas: {details?.mattress || '?'}</span></li>
+                  <li style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: details?.blankets && !details.blankets.toLowerCase().includes('non') ? 'var(--text-primary)' : 'var(--text-secondary)' }}><Bed size={18} /><span>Couvertures: {details?.blankets || '?'}</span></li>
                 </ul>
-                {details?.access && (
-                  <div style={{ marginTop: '1rem', fontSize: '0.95rem', color: 'var(--text-secondary)' }}>
-                    <strong>Acces :</strong> {details.access}
-                  </div>
-                )}
+                {details?.access && <div style={{ marginTop: '1rem', fontSize: '0.95rem', color: 'var(--text-secondary)' }}><strong>Acces :</strong> {details.access}</div>}
               </div>
 
               <div className="glass-panel" style={{ padding: '1.25rem', background: 'rgba(255,255,255,0.03)' }}>
                 <h3 style={{ marginTop: 0, marginBottom: '0.75rem', color: 'var(--accent)' }}>Informations & Remarques</h3>
-                <div style={{ lineHeight: '1.6', color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>
-                  {remarks || 'Aucune description detaillee disponible.'}
-                </div>
+                <div style={{ lineHeight: '1.6', color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>{remarks || 'Aucune description detaillee disponible.'}</div>
               </div>
 
               <div className="glass-panel" style={{ padding: '1.25rem', background: 'rgba(255,255,255,0.03)' }}>
-                <h4 style={{ marginTop: 0, marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <MessageSquare size={18} /> Commentaires recents
-                </h4>
-                {comments.filter(c => c.text && c.text.trim().length > 0).length === 0 ? (
+                <h4 style={{ marginTop: 0, marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><MessageSquare size={18} /> Commentaires recents</h4>
+                {comments.filter(c => c.text?.trim()).length === 0 ? (
                   <div style={{ color: 'var(--text-secondary)' }}>Pas encore de commentaire textuel.</div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    {comments
-                      .filter(c => c.text && c.text.trim().length > 0)
-                      .slice(0, 5)
-                      .map((c, idx) => (
-                        <div key={idx} style={{ padding: '0.75rem', borderRadius: '12px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
-                            <span>{c.author || 'Anonyme'}</span>
-                            <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', opacity: 0.8 }}>{c.date}</span>
-                          </div>
-                          <div style={{ color: 'var(--text-primary)', lineHeight: '1.5', whiteSpace: 'pre-line' }}>{c.text}</div>
+                    {comments.filter(c => c.text?.trim()).slice(0, 5).map((c, idx) => (
+                      <div key={idx} style={{ padding: '0.75rem', borderRadius: '12px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                          <span>{c.author || 'Anonyme'}</span>
+                          <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>{c.date}</span>
                         </div>
-                      ))}
+                        <div style={{ color: 'var(--text-primary)', lineHeight: '1.5', whiteSpace: 'pre-line' }}>{c.text}</div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
             </div>
 
+            {/* Right column */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
               <div
-                style={{
-                  height: '240px',
-                  borderRadius: '12px',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  position: 'relative',
-                  cursor: mainPhoto ? 'pointer' : 'default',
-                  overflow: 'hidden',
-                  background: mainPhoto ? 'var(--card-bg)' : 'linear-gradient(45deg, var(--bg-color), var(--card-bg))',
-                }}
+                style={{ height: '240px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', position: 'relative', cursor: mainPhoto ? 'pointer' : 'default', overflow: 'hidden', background: mainPhoto ? 'var(--card-bg)' : 'linear-gradient(45deg, var(--bg-color), var(--card-bg))' }}
                 onClick={() => mainPhoto && openLightbox(photos.length - 1)}
-                role="button"
-                tabIndex={0}
               >
-                {mainPhoto && (
-                  <img
-                    src={mainPhoto}
-                    alt="Vue principale du refuge"
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'cover',
-                      display: 'block',
-                    }}
-                  />
-                )}
+                {mainPhoto && <img src={mainPhoto} alt="Vue principale" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />}
               </div>
 
-              {photos && photos.length > 1 && (
+              {photos?.length > 1 && (
                 <div style={{ overflowY: 'auto', paddingRight: '0.3rem' }}>
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
-                      gap: '0.75rem',
-                    }}
-                  >
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '0.75rem' }}>
                     {photos.slice(1).map((photo, idx) => (
-                      <div
-                        key={idx}
-                        style={{
-                          position: 'relative',
-                          overflow: 'hidden',
-                          borderRadius: '10px',
-                          border: '1px solid rgba(255,255,255,0.07)',
-                        }}
-                        className="photo-thumb"
-                        onClick={() => openLightbox(idx + 1)}
-                      >
-                        <img
-                          src={photo}
-                          alt={`Vue ${idx + 2}`}
-                          style={{
-                            width: '100%',
-                            height: '110px',
-                            objectFit: 'cover',
-                            display: 'block',
-                          }}
-                        />
+                      <div key={idx} className="photo-thumb" onClick={() => openLightbox(idx + 1)} style={{ overflow: 'hidden', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)' }}>
+                        <img src={photo} alt={`Vue ${idx + 2}`} style={{ width: '100%', height: '110px', objectFit: 'cover', display: 'block' }} />
                       </div>
                     ))}
                   </div>
@@ -1145,230 +719,37 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
               )}
 
               <div className="glass-panel" style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', justifyContent: 'flex-start' }}>
-                  <MapPin size={18} />
-                  <strong>Localisation</strong>
-                </div>
-                <div
-                  ref={miniMapContainerRef}
-                  style={{
-                    height: '200px',
-                    borderRadius: '12px',
-                    overflow: 'hidden',
-                    border: '1px solid rgba(255,255,255,0.08)',
-                    cursor: 'pointer',
-                  }}
-                  onClick={() => setMapExpanded(true)}
-                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}><MapPin size={18} /><strong>Localisation</strong></div>
+                <div ref={miniMapContainerRef} style={{ height: '200px', borderRadius: '12px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer' }} onClick={() => setMapExpanded(true)} />
               </div>
             </div>
           </div>
 
-          {lightboxIndex !== null && photos && photos.length > 0 && (
-            <div
-              onClick={closeLightbox}
-              style={{
-                position: 'fixed',
-                inset: 0,
-                background: 'rgba(0,0,0,0.8)',
-                zIndex: 1200,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: '1rem',
-              }}
-            >
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeLightbox();
-                }}
-                style={{
-                  position: 'absolute',
-                  top: 16,
-                  right: 16,
-                  background: 'rgba(0,0,0,0.6)',
-                  border: '1px solid rgba(255,255,255,0.3)',
-                  color: 'white',
-                  borderRadius: '50%',
-                  width: 40,
-                  height: 40,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                }}
-              >
-                <X size={20} />
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  gotoPhoto(-1);
-                }}
-                style={{
-                  position: 'absolute',
-                  left: 20,
-                  background: 'rgba(0,0,0,0.6)',
-                  border: '1px solid rgba(255,255,255,0.3)',
-                  color: 'white',
-                  borderRadius: '50%',
-                  width: 44,
-                  height: 44,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                }}
-              >
-                <ChevronLeft size={22} />
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  gotoPhoto(1);
-                }}
-                style={{
-                  position: 'absolute',
-                  right: 20,
-                  background: 'rgba(0,0,0,0.6)',
-                  border: '1px solid rgba(255,255,255,0.3)',
-                  color: 'white',
-                  borderRadius: '50%',
-                  width: 44,
-                  height: 44,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                }}
-              >
-                <ChevronRight size={22} />
-              </button>
-              <img
-                src={photos[lightboxIndex]}
-                alt={`Photo ${lightboxIndex + 1}`}
-                style={{
-                  maxHeight: '90vh',
-                  maxWidth: '90vw',
-                  borderRadius: '12px',
-                  border: '1px solid rgba(255,255,255,0.2)',
-                  boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
-                }}
-                onClick={(e) => e.stopPropagation()}
-              />
+          {/* Lightbox */}
+          {lightboxIndex !== null && photos?.length > 0 && (
+            <div onClick={closeLightbox} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+              <button onClick={(e) => { e.stopPropagation(); closeLightbox(); }} style={{ position: 'absolute', top: 16, right: 16, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.3)', color: 'white', borderRadius: '50%', width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><X size={20} /></button>
+              <button onClick={(e) => { e.stopPropagation(); gotoPhoto(-1); }} style={{ position: 'absolute', left: 20, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.3)', color: 'white', borderRadius: '50%', width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><ChevronLeft size={22} /></button>
+              <button onClick={(e) => { e.stopPropagation(); gotoPhoto(1); }} style={{ position: 'absolute', right: 20, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.3)', color: 'white', borderRadius: '50%', width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><ChevronRight size={22} /></button>
+              <img src={photos[lightboxIndex]} alt={`Photo ${lightboxIndex + 1}`} style={{ maxHeight: '90vh', maxWidth: '90vw', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.2)', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }} onClick={(e) => e.stopPropagation()} />
             </div>
           )}
 
+          {/* Expanded Map */}
           {mapExpanded && (
-            <div
-              onClick={() => setMapExpanded(false)}
-              style={{
-                position: 'fixed',
-                inset: 0,
-                background: 'rgba(0,0,0,0.8)',
-                zIndex: 1250,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: '1.5rem',
-              }}
-            >
-              <div
-                onClick={(e) => e.stopPropagation()}
-                style={{
-                  position: 'relative',
-                  width: 'min(1100px, 95vw)',
-                  height: 'min(750px, 85vh)',
-                  background: 'var(--card-bg)',
-                  borderRadius: '14px',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  overflow: 'hidden',
-                  boxShadow: '0 24px 80px rgba(0,0,0,0.45)',
-                }}
-              >
-                <button
-                  onClick={() => setMapExpanded(false)}
-                  style={{
-                    position: 'absolute',
-                    top: 14,
-                    right: 14,
-                    background: 'rgba(0,0,0,0.5)',
-                    border: '1px solid rgba(255,255,255,0.25)',
-                    borderRadius: '50%',
-                    width: 42,
-                    height: 42,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: 'white',
-                    cursor: 'pointer',
-                    zIndex: 2,
-                  }}
-                >
-                  <X size={20} />
-                </button>
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 16,
-                    left: 16,
-                    zIndex: 2,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '0.5rem',
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    className="map-layer-toggle-button"
-                    aria-label="Basculer le menu des fonds"
-                    aria-expanded={showLayerMenu}
-                    onClick={() => setShowLayerMenu((open) => !open)}
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: '50%',
-                      border: '1px solid rgba(255,255,255,0.25)',
-                      background: 'rgba(0,0,0,0.5)',
-                      color: 'white',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <Layers size={18} />
-                  </button>
+            <div onClick={() => setMapExpanded(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 1250, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1.5rem' }}>
+              <div onClick={(e) => e.stopPropagation()} style={{ position: 'relative', width: 'min(1100px, 95vw)', height: 'min(750px, 85vh)', background: 'var(--card-bg)', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.12)', overflow: 'hidden', boxShadow: '0 24px 80px rgba(0,0,0,0.45)' }}>
+                <button onClick={() => setMapExpanded(false)} style={{ position: 'absolute', top: 14, right: 14, background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.25)', borderRadius: '50%', width: 42, height: 42, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', cursor: 'pointer', zIndex: 2 }}><X size={20} /></button>
+                
+                <div style={{ position: 'absolute', top: 16, left: 16, zIndex: 2, display: 'flex', flexDirection: 'column', gap: '0.5rem' }} onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => setShowLayerMenu((o) => !o)} style={{ width: 44, height: 44, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.25)', background: 'rgba(0,0,0,0.5)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><Layers size={18} /></button>
                   {showLayerMenu && (
-                    <div
-                      className="map-layer-menu"
-                      style={{
-                        background: 'rgba(0,0,0,0.6)',
-                        border: '1px solid rgba(255,255,255,0.12)',
-                        borderRadius: '12px',
-                        padding: '0.75rem',
-                        backdropFilter: 'blur(4px)',
-                        minWidth: '260px',
-                      }}
-                    >
+                    <div style={{ background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '12px', padding: '0.75rem', backdropFilter: 'blur(4px)', minWidth: '260px' }}>
                       <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Fonds supplémentaires</div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
-                        {OVERLAY_LAYERS.filter((layer) => !layer.alwaysOn).map((layer) => (
-                          <label
-                            key={layer.id}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '0.6rem',
-                              color: 'var(--text-primary)',
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={!!overlayVisibility[layer.id]}
-                              onChange={() => toggleOverlayLayer(layer.id)}
-                            />
+                        {OVERLAY_LAYERS.filter((l) => !l.alwaysOn).map((layer) => (
+                          <label key={layer.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', color: 'var(--text-primary)' }}>
+                            <input type="checkbox" checked={!!overlayVisibility[layer.id]} onChange={() => toggleOverlayLayer(layer.id)} />
                             <span>{layer.label}</span>
                           </label>
                         ))}
@@ -1376,16 +757,8 @@ const RefugeModal = ({ refuge, refuges = [], onClose, isStarred, onToggleStar, i
                     </div>
                   )}
                 </div>
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                  }}
-                  ref={expandedMapRef}
-                />
+                
+                <div ref={expandedMapRef} style={{ position: 'absolute', inset: 0 }} />
               </div>
             </div>
           )}
