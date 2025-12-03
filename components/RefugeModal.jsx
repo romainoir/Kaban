@@ -196,6 +196,29 @@ class OrbitController {
     return Math.max(80, Math.min(r, 2000));
   }
 
+  distanceMeters(lng1, lat1, lng2, lat2) {
+    const R = 6371000;
+    const toRad = (deg) => deg * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+
+    const a = Math.sin(dLat / 2) ** 2
+      + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+  }
+
+  bearingFromPosition(lng, lat) {
+    const mPerDegLat = 111320;
+    const mPerDegLng = mPerDegLat * Math.cos(this.toRad(this.target.lat));
+
+    const dLngMeters = (lng - this.target.lng) * mPerDegLng;
+    const dLatMeters = (lat - this.target.lat) * mPerDegLat;
+
+    return ((Math.atan2(dLngMeters, dLatMeters) * 180 / Math.PI) + 360) % 360;
+  }
+
   heightForRadius(r) {
     return r * 0.6;
   }
@@ -265,11 +288,28 @@ class OrbitController {
 
   onZoomEnd() {
     if (this.disposed || this.phase !== 'orbit') return;
-    
+
     const newZoom = this.map.getZoom();
     if (Math.abs(newZoom - this.lastZoom) > 0.1) {
       this.lastZoom = newZoom;
-      this.targetRadius = this.radiusForZoom(newZoom);
+
+      const freeCam = this.map.getFreeCameraOptions();
+      const pos = freeCam?.position;
+      const camLngLat = pos?.toLngLat?.();
+      const metersPerUnit = pos?.meterInMercatorCoordinateUnits?.();
+
+      if (camLngLat) {
+        const distance = this.distanceMeters(camLngLat.lng, camLngLat.lat, this.target.lng, this.target.lat);
+        this.targetRadius = Math.max(80, distance);
+
+        if (pos?.z && metersPerUnit) {
+          const camHeight = pos.z / metersPerUnit;
+          const clearanceHeight = Math.max(camHeight - this.groundElevation, this.config.minClearance);
+          this.height = isFinite(clearanceHeight) ? clearanceHeight : this.height;
+        }
+      } else {
+        this.targetRadius = this.radiusForZoom(newZoom);
+      }
     }
   }
 
@@ -314,29 +354,25 @@ class OrbitController {
 
   async start() {
     if (this.disposed) return;
-    
+
     this.phase = 'intro';
-    
+
+    // Ensure terrain sampling starts fresh for the new target
+    this.terrainCache.clear();
+    this.groundElevation = 0;
+
     // Wait for terrain to be ready
     await this.waitForTerrain();
     if (this.disposed) return;
     
     // Get current map state
     const startBearing = this.map.getBearing();
-    const startZoom = this.map.getZoom();
     
     // Calculate intro end state
     const endBearing = startBearing + 60; // Rotate during intro
     const endZoom = this.config.introZoom;
     const endPitch = this.config.introPitch;
-    
-    // Initialize orbit parameters
-    this.bearing = endBearing;
-    this.targetRadius = this.radiusForZoom(endZoom);
-    this.radius = this.targetRadius;
-    this.height = this.heightForRadius(this.radius);
-    this.lastZoom = endZoom;
-    
+
     // Use native map animation for intro
     this.map.easeTo({
       center: this.target,
@@ -359,13 +395,34 @@ class OrbitController {
       
       setTimeout(() => {
         if (this.disposed) return;
-        
-        // Get final bearing from map
-        this.bearing = this.map.getBearing();
-        
+
+        // Align free camera to final ease position to avoid jumps
+        const finalFreeCam = this.map.getFreeCameraOptions();
+        const finalPos = finalFreeCam?.position;
+        const camLngLat = finalPos?.toLngLat?.();
+        const metersPerUnit = finalPos?.meterInMercatorCoordinateUnits?.();
+
+        if (camLngLat) {
+          this.bearing = this.bearingFromPosition(camLngLat.lng, camLngLat.lat);
+          const horizontal = this.distanceMeters(camLngLat.lng, camLngLat.lat, this.target.lng, this.target.lat);
+          this.radius = this.targetRadius = Math.max(80, horizontal || this.radius);
+
+          const camHeight = (finalPos.z && metersPerUnit) ? finalPos.z / metersPerUnit : this.height;
+          const clearanceHeight = Math.max(camHeight - this.groundElevation, this.config.minClearance);
+          this.height = isFinite(clearanceHeight) ? clearanceHeight : this.height;
+        } else {
+          // Fallback to expected end state
+          this.bearing = this.map.getBearing();
+          this.targetRadius = this.radiusForZoom(endZoom);
+          this.radius = this.targetRadius;
+          this.height = this.heightForRadius(this.radius);
+        }
+
+        this.lastZoom = this.map.getZoom();
+
         // Refresh terrain
         this.refreshGroundElevation();
-        
+
         // Listen for zoom changes
         this.map.on('zoomend', this.onZoomEnd);
         
